@@ -1,9 +1,185 @@
 import { getNativeModule } from "./native-loader";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import type { CoreMessage } from "ai";
+
+// Lightweight opt-in logger: set APPLE_AI_DEBUG=1 to enable
+function debug(...args: any[]) {
+  if (process.env.APPLE_AI_DEBUG) console.debug("[apple-ai]", ...args);
+}
+
+function debugErr(...args: any[]) {
+  if (process.env.APPLE_AI_DEBUG) console.error("[apple-ai]", ...args);
+}
 
 // Initialize native module using robust loader
 const native = getNativeModule();
+
+// Register binding helpers we added in Rust
+type ToolHandler = (args: any) => Promise<any> | any;
+
+const toolBindings = {
+  setToolCallback: native.setToolCallback as (
+    callback: (err: any, toolId: number, argsJson: string) => void
+  ) => void,
+  clearToolCallback: native.clearToolCallback as () => void,
+  toolResult: native.toolResult as (toolId: number, resultJson: string) => void,
+  generateResponseWithToolsNative: native.generateResponseWithToolsNative as (
+    messagesJson: string,
+    toolsJson: string,
+    temperature?: number,
+    maxTokens?: number
+  ) => Promise<string>,
+  generateResponseWithToolsStream: native.generateResponseWithToolsStream as (
+    messagesJson: string,
+    toolsJson: string,
+    temperature: number | undefined,
+    maxTokens: number | undefined,
+    cb: (err: any, chunk?: string | null) => void
+  ) => void,
+};
+
+// ---------- Ephemeral tool invocation ----------
+
+export async function chatWithEphemeralTools(options: {
+  messages: CoreMessage[];
+  tools?:
+    | Array<{
+        name: string;
+        description?: string;
+        schema: z.ZodType<any>;
+        handler: (args: any) => any;
+      }>
+    | Record<string, any>;
+  temperature?: number;
+  stream?: boolean;
+}): Promise<{ content?: string; error?: string }> {
+  const { messages, tools = {}, temperature = 0.7, stream = false } = options;
+
+  const toolMap = new Map<number, { tool: any; schema: any }>();
+
+  try {
+    // 1. Setup tools if provided
+    if (
+      (Array.isArray(tools) && tools.length > 0) ||
+      (!Array.isArray(tools) && Object.keys(tools).length > 0)
+    ) {
+      let toolId = 1;
+
+      if (Array.isArray(tools)) {
+        // Handle array format: [{ name, schema, handler }]
+        for (const tool of tools) {
+          const jsonSchema = {
+            id: toolId,
+            name: tool.name,
+            description: tool.description || "",
+            parameters: zodToJsonSchema(tool.schema),
+          };
+
+          toolMap.set(toolId, {
+            tool: { execute: tool.handler },
+            schema: jsonSchema,
+          });
+          toolId++;
+        }
+      } else {
+        // Handle object format: { name: { parameters, execute } }
+        for (const [name, tool] of Object.entries(tools)) {
+          const jsonSchema = {
+            id: toolId,
+            name: name,
+            description: "",
+            parameters: tool.parameters
+              ? tool.parameters instanceof z.ZodSchema
+                ? zodToJsonSchema(tool.parameters)
+                : tool.parameters
+              : { type: "object", properties: {} },
+          };
+
+          toolMap.set(toolId, { tool, schema: jsonSchema });
+          toolId++;
+        }
+      }
+    }
+
+    // Setup global tool callback once for all tools
+    if (toolMap.size > 0) {
+      toolBindings.setToolCallback(
+        async (err: any, toolId: number, argsJson: string) => {
+          if (err) {
+            debugErr("Tool callback error:", err);
+            return;
+          }
+          debug(
+            "Callback received - toolId:",
+            toolId,
+            `(type: ${typeof toolId})`,
+            "argsJson:",
+            argsJson
+          );
+          const tool = toolMap.get(toolId)?.tool;
+          if (!tool) {
+            debug(
+              `Tool ${toolId} not found in map. Available tools:`,
+              Array.from(toolMap.keys())
+            );
+            toolBindings.toolResult(toolId, "{}");
+            return;
+          }
+
+          try {
+            const args = JSON.parse(argsJson);
+            debug(`Tool ${toolId} called with args:`, args);
+            const result = await tool.execute(args);
+            debug(`Tool ${toolId} returned:`, result);
+            toolBindings.toolResult(toolId, JSON.stringify(result));
+          } catch (error) {
+            debugErr(`Tool ${toolId} error:`, error);
+            toolBindings.toolResult(toolId, "{}");
+          }
+        }
+      );
+    }
+
+    // Log what we're sending to Swift
+    const toolSchemas = Array.from(toolMap.values()).map((t) => t.schema);
+    debug("Sending tools to Swift", JSON.stringify(toolSchemas));
+
+    // 2. Generate response
+    if (stream) {
+      return new Promise((resolve, reject) => {
+        let fullContent = "";
+        toolBindings.generateResponseWithToolsStream(
+          JSON.stringify(messages),
+          JSON.stringify(toolSchemas),
+          temperature,
+          undefined, // maxTokens
+          (err: any, chunk?: string | null) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            if (chunk === null || chunk === "") {
+              resolve({ content: fullContent });
+              return;
+            }
+            fullContent += chunk;
+          }
+        );
+      });
+    } else {
+      const result = await toolBindings.generateResponseWithToolsNative(
+        JSON.stringify(messages),
+        JSON.stringify(toolSchemas),
+        temperature,
+        undefined // maxTokens
+      );
+      return { content: JSON.parse(result).text };
+    }
+  } finally {
+    // Cleanup happens automatically when request completes
+  }
+}
 
 // Types for our Apple AI library
 export interface ChatMessage {
@@ -333,11 +509,10 @@ export class AppleAISDK {
 
       // If the consumer is waiting, resolve immediately; otherwise buffer
       if (pendingResolve) {
-        pendingResolve({ value: chunk, done: false });
+        pendingResolve({ value: chunk!, done: false });
         pendingResolve = null;
-        pendingReject = null;
       } else {
-        queue.push(chunk);
+        queue.push(chunk!);
       }
     };
 
@@ -430,4 +605,102 @@ export async function generateStructuredFromZod<T = any>(params: {
     ...rest,
     schemaJson: JSON.stringify(jsonSchemaObj),
   });
+}
+
+export function streamChatWithEphemeralTools(options: {
+  messages: CoreMessage[];
+  tools: Array<{
+    name: string;
+    description?: string;
+    schema: z.ZodType<any>;
+    handler: (args: any) => any;
+  }>;
+  temperature?: number;
+}): AsyncIterableIterator<string> {
+  let toolId = 1;
+  const toolMap = new Map<number, { tool: any; schema: any }>();
+
+  for (const tool of options.tools) {
+    toolMap.set(toolId, {
+      tool: { execute: tool.handler },
+      schema: {
+        id: toolId,
+        name: tool.name,
+        description: tool.description || "",
+        parameters: zodToJsonSchema(tool.schema),
+      },
+    });
+    toolId++;
+  }
+
+  // Register global callback
+  toolBindings.setToolCallback((err, id, argsJson) => {
+    if (err) return;
+    const entry = toolMap.get(id);
+    if (!entry) {
+      toolBindings.toolResult(id, "{}");
+      return;
+    }
+    Promise.resolve()
+      .then(() => entry.tool.execute(JSON.parse(argsJson)))
+      .then((res) => toolBindings.toolResult(id, JSON.stringify(res ?? null)))
+      .catch(() => toolBindings.toolResult(id, "{}"));
+  });
+
+  const schemas = JSON.stringify(
+    Array.from(toolMap.values()).map((v) => v.schema)
+  );
+
+  const queue: string[] = [];
+  let done = false;
+  let error: any = null;
+  let pendingResolve: ((value: IteratorResult<string>) => void) | null = null;
+
+  toolBindings.generateResponseWithToolsStream(
+    JSON.stringify(options.messages),
+    schemas,
+    options.temperature ?? undefined,
+    undefined,
+    (err, chunk) => {
+      if (err) {
+        error = err;
+        done = true;
+        if (pendingResolve) pendingResolve({ value: undefined, done: true });
+        return;
+      }
+      if (chunk === null || chunk === "") {
+        done = true;
+        if (pendingResolve) pendingResolve({ value: undefined, done: true });
+        toolBindings.clearToolCallback?.();
+        return;
+      }
+      if (pendingResolve) {
+        pendingResolve({ value: chunk!, done: false });
+        pendingResolve = null;
+      } else {
+        queue.push(chunk!);
+      }
+    }
+  );
+
+  return {
+    next(): Promise<IteratorResult<string>> {
+      if (queue.length)
+        return Promise.resolve({ value: queue.shift()!, done: false });
+      if (done) return Promise.resolve({ value: undefined, done: true });
+      if (error) return Promise.reject(error);
+      return new Promise((resolve) => (pendingResolve = resolve));
+    },
+    async return() {
+      toolBindings.clearToolCallback?.();
+      return { value: undefined, done: true };
+    },
+    async throw(e) {
+      toolBindings.clearToolCallback?.();
+      throw e;
+    },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+  };
 }

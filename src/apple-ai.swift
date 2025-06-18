@@ -336,7 +336,76 @@ private func emitError(_ message: String, to onChunk: (@convention(c) (UnsafePoi
     }
 }
 
-// MARK: - Tool Calling Support
+// MARK: - JS Tool Callback Bridge
+
+// Simple async callback - Rust calls this, expects result via separate callback
+public typealias JSToolCallback = @convention(c) (_ toolID: UInt64, _ argsJson: UnsafePointer<CChar>) -> Void
+
+fileprivate var jsToolCallback: JSToolCallback?
+
+// Continuation storage for awaiting tool results without busy-waiting
+private var pendingContinuations: [UInt64: CheckedContinuation<String, Never>] = [:]
+private let toolCallLock = DispatchQueue(label: "tool.call.lock")
+
+// C callback that receives tool results
+@_cdecl("apple_ai_tool_result_callback")
+public func appleAIToolResultCallback(_ toolID: UInt64, _ resultJson: UnsafePointer<CChar>) {
+    let result = String(cString: resultJson)
+    toolCallLock.sync {
+        if let cont = pendingContinuations.removeValue(forKey: toolID) {
+            cont.resume(returning: result)
+        }
+    }
+}
+
+// Expose a C function so Rust can register the async callback
+@_cdecl("apple_ai_register_tool_callback")
+public func appleAIRegisterToolCallback(_ cb: JSToolCallback?) {
+    jsToolCallback = cb
+}
+
+// MARK: - Proxy Tool implementation bridging to JS
+
+@available(macOS 26.0, *)
+fileprivate struct JSArguments: ConvertibleFromGeneratedContent {
+    let raw: GeneratedContent
+    init(_ content: GeneratedContent) throws {
+        self.raw = content
+    }
+}
+
+@available(macOS 26.0, *)
+fileprivate struct JSProxyTool: Tool {
+    typealias Arguments = JSArguments
+
+    let toolID: UInt64
+    let name: String
+    let description: String
+    let parametersSchema: GenerationSchema
+
+    var parameters: GenerationSchema { parametersSchema }
+
+    func call(arguments: JSArguments) async throws -> ToolOutput {
+        guard let cb = jsToolCallback else {
+            return ToolOutput("Tool callback not registered")
+        }
+        // Convert GeneratedContent → JSON
+        let jsonObj = generatedContentToJSON(arguments.raw)
+        guard let data = try? JSONSerialization.data(withJSONObject: jsonObj),
+              let jsonStr = String(data: data, encoding: .utf8) else {
+            return ToolOutput("Failed to serialize arguments")
+        }
+        
+        // Call JS side and suspend until result arrives via continuation
+        let res = await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
+            toolCallLock.sync { pendingContinuations[toolID] = cont }
+            jsonStr.withCString { cb(toolID, $0) }
+        }
+        return ToolOutput(res)
+    }
+}
+
+// MARK: - Updated Tool Calling implementation
 
 @available(macOS 26.0, *)
 @_cdecl("apple_ai_generate_response_with_tools")
@@ -348,112 +417,89 @@ public func appleAIGenerateResponseWithTools(
 ) -> UnsafeMutablePointer<CChar>? {
     let messagesJsonString = String(cString: messagesJson)
     let toolsJsonString = String(cString: toolsJson)
-    
-    // Use semaphore to convert async to sync
+
     let semaphore = DispatchSemaphore(value: 0)
     var result: String = "Error: No response"
-    
+
     Task {
         do {
             let model = SystemLanguageModel.default
-            
-            // Check availability first
-            let availability = model.availability
-            guard case .available = availability else {
+            guard case .available = model.availability else {
                 result = "Error: Apple Intelligence not available"
                 semaphore.signal()
                 return
             }
-            
-            // Parse messages from JSON
-            guard let messagesData = messagesJsonString.data(using: .utf8) else {
-                result = "Error: Invalid messages JSON data"
+
+            // Decode messages
+            guard let msgData = messagesJsonString.data(using: .utf8) else {
+                result = "Error: Invalid messages JSON"
                 semaphore.signal()
                 return
             }
-            
-            let messages = try JSONDecoder().decode([ChatMessage].self, from: messagesData)
-            
-            // Parse tools from JSON
-            guard let toolsData = toolsJsonString.data(using: .utf8) else {
-                result = "Error: Invalid tools JSON data"
+            let messages = try JSONDecoder().decode([ChatMessage].self, from: msgData)
+            guard !messages.isEmpty else {
+                result = "Error: No messages provided"
                 semaphore.signal()
                 return
             }
-            
-            let toolDefinitions = try JSONDecoder().decode([ToolDefinition].self, from: toolsData)
-            
-            // Get the last message as the current prompt
             let lastMessage = messages.last!
             let currentPrompt = lastMessage.content
-            
-            // Convert previous messages to transcript for conversation context
             let previousMessages = messages.count > 1 ? Array(messages.dropLast()) : []
             let transcriptEntries = convertMessagesToTranscript(previousMessages)
-            
-            // Create instructions with tool definitions
-            var instructionSegments: [Transcript.Segment] = []
-            if !toolDefinitions.isEmpty {
-                // Create tool definitions compatible with Apple's API
-                var toolDescriptions = "You have access to the following tools:\n\n"
-                for tool in toolDefinitions {
-                    toolDescriptions += "Tool: \(tool.name)\n"
-                    if let desc = tool.description {
-                        toolDescriptions += "Description: \(desc)\n"
-                    }
-                    toolDescriptions += "\n"
-                }
-                
-                let textSegment = Transcript.TextSegment(content: toolDescriptions)
-                instructionSegments.append(.text(textSegment))
+
+            // Decode tool definitions (now expect id,name,description,parameters)
+            guard let toolsData = toolsJsonString.data(using: .utf8),
+                  let rawToolsArr = try JSONSerialization.jsonObject(with: toolsData) as? [[String: Any]] else {
+                result = "Error: Invalid tools JSON"
+                semaphore.signal()
+                return
             }
-            
-            // Add tool definitions to transcript if tools are provided
-            var finalTranscriptEntries = transcriptEntries
-            if !toolDefinitions.isEmpty {
-                // For now, we'll just add instructions about tools
-                // In a real implementation, we'd need to properly integrate with Apple's Tool API
-                let instructions = Transcript.Instructions(
-                    segments: instructionSegments,
-                    toolDefinitions: [] // Empty for now - requires proper Tool objects
-                )
-                finalTranscriptEntries.insert(.instructions(instructions), at: 0)
+
+            var tools: [any Tool] = []
+            for dict in rawToolsArr {
+                guard let idNum = dict["id"] as? UInt64,
+                      let name = dict["name"] as? String else { continue }
+                let description = dict["description"] as? String ?? ""
+                let paramsSchemaJson = dict["parameters"] as? [String: Any] ?? [:]
+                let (root, deps) = buildSchemasFromJson(paramsSchemaJson)
+                let genSchema = try GenerationSchema(root: root, dependencies: deps)
+                let proxy = JSProxyTool(toolID: idNum, name: name, description: description, parametersSchema: genSchema)
+                tools.append(proxy)
             }
-            
-            // Create session with conversation history
-            let transcript = Transcript(entries: finalTranscriptEntries)
-            let session = LanguageModelSession(transcript: transcript)
-            
-            // Create generation options
+
+            // Build final transcript with tools embedded as definitions
+            var finalEntries = transcriptEntries
+            if !tools.isEmpty {
+                let instructions = Transcript.Instructions(segments: [], toolDefinitions: tools.map { tool in
+                    Transcript.ToolDefinition(name: tool.name, description: tool.description, parameters: tool.parameters)
+                })
+                finalEntries.insert(.instructions(instructions), at: 0)
+            }
+
+            let transcript = Transcript(entries: finalEntries)
+            let session = LanguageModelSession(tools: tools, transcript: transcript)
+
+            // Generation options
             var options = GenerationOptions()
-            if temperature > 0 {
-                options = GenerationOptions(temperature: temperature, maximumResponseTokens: maxTokens > 0 ? Int(maxTokens) : nil)
-            } else if maxTokens > 0 {
-                options = GenerationOptions(maximumResponseTokens: Int(maxTokens))
-            }
-            
-            // Generate response - for now without native tool support
+            if temperature > 0 { options.temperature = temperature }
+            if maxTokens > 0 { options.maximumResponseTokens = Int(maxTokens) }
+
             let response = try await session.respond(to: currentPrompt, options: options)
             
-            // Create response JSON
-            var responseDict: [String: Any] = [:]
-            responseDict["text"] = response.content
-            responseDict["toolCalls"] = [] // Empty for now
-            
-            // Convert to JSON string
-            let jsonData = try JSONSerialization.data(withJSONObject: responseDict, options: [])
-            result = String(data: jsonData, encoding: .utf8) ?? "Error: Failed to encode response"
-            
+            let text = response.content
+
+            // Collect any tool calls in the transcript slice of response.transcriptEntries
+            // For now, we just return text.
+            let json: [String: Any] = ["text": text]
+            let jsonData = try JSONSerialization.data(withJSONObject: json)
+            result = String(data: jsonData, encoding: .utf8) ?? text
         } catch {
             result = "Error: \(error.localizedDescription)"
         }
-        
         semaphore.signal()
     }
-    
-    // Wait for async operation to complete
+
     semaphore.wait()
-    
     return strdup(result)
 }
 
@@ -760,4 +806,86 @@ private func buildSchemasFromJson(_ json: [String: Any]) -> (DynamicGenerationSc
     // Fallback
     let root = convertJSONSchemaToDynamic(json, name: json["title"] as? String)
     return (root, dependencies)
+}
+
+@available(macOS 26.0, *)
+@_cdecl("apple_ai_generate_response_with_tools_stream")
+public func appleAIGenerateResponseWithToolsStream(
+    messagesJson: UnsafePointer<CChar>,
+    toolsJson: UnsafePointer<CChar>,
+    temperature: Double,
+    maxTokens: Int32,
+    onChunk: (@convention(c) (UnsafePointer<CChar>?) -> Void)
+) {
+    let messagesJsonString = String(cString: messagesJson)
+    let toolsJsonString = String(cString: toolsJson)
+
+    Task.detached {
+        do {
+            let model = SystemLanguageModel.default
+            guard case .available = model.availability else {
+                emitError("Model unavailable", to: onChunk)
+                return
+            }
+
+            // Parse messages
+            guard let msgData = messagesJsonString.data(using: .utf8) else {
+                emitError("Invalid messages JSON", to: onChunk)
+                return
+            }
+            let messages = try JSONDecoder().decode([ChatMessage].self, from: msgData)
+            guard !messages.isEmpty else {
+                emitError("No messages", to: onChunk)
+                return
+            }
+            let last = messages.last!
+            let currentPrompt = last.content
+            let previous = messages.count > 1 ? Array(messages.dropLast()) : []
+            let transcriptEntries = convertMessagesToTranscript(previous)
+
+            // Parse tools
+            guard let toolsData = toolsJsonString.data(using: .utf8),
+                  let rawArr = try JSONSerialization.jsonObject(with: toolsData) as? [[String: Any]] else {
+                emitError("Invalid tools JSON", to: onChunk)
+                return
+            }
+            var tools: [any Tool] = []
+            for dict in rawArr {
+                guard let id = dict["id"] as? UInt64,
+                      let name = dict["name"] as? String else { continue }
+                let description = dict["description"] as? String ?? ""
+                let paramsJson = dict["parameters"] as? [String: Any] ?? [:]
+                let (root, deps) = buildSchemasFromJson(paramsJson)
+                let gs = try GenerationSchema(root: root, dependencies: deps)
+                tools.append(JSProxyTool(toolID: id, name: name, description: description, parametersSchema: gs))
+            }
+
+            var entries = transcriptEntries
+            if !tools.isEmpty {
+                let instr = Transcript.Instructions(segments: [], toolDefinitions: tools.map { t in
+                    Transcript.ToolDefinition(name: t.name, description: t.description, parameters: t.parameters)
+                })
+                entries.insert(.instructions(instr), at: 0)
+            }
+            let transcript = Transcript(entries: entries)
+            let session = LanguageModelSession(tools: tools, transcript: transcript)
+
+            var options = GenerationOptions()
+            if temperature != 0.0 { options.temperature = temperature }
+            if maxTokens > 0 { options.maximumResponseTokens = Int(maxTokens) }
+
+            var prev = ""
+            for try await cumulative in session.streamResponse(to: currentPrompt, options: options) {
+                let delta = String(cumulative.dropFirst(prev.count))
+                prev = cumulative
+                guard !delta.isEmpty else { continue }
+                delta.withCString { cStr in
+                    onChunk(strdup(cStr))
+                }
+            }
+            onChunk(nil)
+        } catch {
+            emitError(error.localizedDescription, to: onChunk)
+        }
+    }
 } 
