@@ -401,7 +401,9 @@ fileprivate struct JSProxyTool: Tool {
             toolCallLock.sync { pendingContinuations[toolID] = cont }
             jsonStr.withCString { cb(toolID, $0) }
         }
-        return ToolOutput(res)
+        let resString = res
+        ToolInvocationStore.shared.append(name: name, args: jsonObj, result: resString)
+        return ToolOutput(resString)
     }
 }
 
@@ -479,6 +481,9 @@ public func appleAIGenerateResponseWithTools(
             let transcript = Transcript(entries: finalEntries)
             let session = LanguageModelSession(tools: tools, transcript: transcript)
 
+            // Reset tool capture
+            ToolInvocationStore.shared.reset()
+
             // Generation options
             var options = GenerationOptions()
             if temperature > 0 { options.temperature = temperature }
@@ -487,12 +492,14 @@ public func appleAIGenerateResponseWithTools(
             let response = try await session.respond(to: currentPrompt, options: options)
             
             let text = response.content
+            let calls = ToolInvocationStore.shared.snapshot()
 
-            // Collect any tool calls in the transcript slice of response.transcriptEntries
-            // For now, we just return text.
-            let json: [String: Any] = ["text": text]
-            let jsonData = try JSONSerialization.data(withJSONObject: json)
-            result = String(data: jsonData, encoding: .utf8) ?? text
+            var json: [String: Any] = ["text": text]
+            if !calls.isEmpty { json["toolCalls"] = calls }
+
+            // Convert to JSON string
+            let jsonData = try JSONSerialization.data(withJSONObject: json, options: [])
+            result = String(data: jsonData, encoding: .utf8) ?? "Error: Encoding failure"
         } catch {
             result = "Error: \(error.localizedDescription)"
         }
@@ -888,4 +895,27 @@ public func appleAIGenerateResponseWithToolsStream(
             emitError(error.localizedDescription, to: onChunk)
         }
     }
+}
+
+// MARK: - Global capture of tool invocations during a single respond() call
+@available(macOS 26.0, *)
+fileprivate class ToolInvocationStore {
+    static let shared = ToolInvocationStore()
+    private let queue = DispatchQueue(label: "tool.invocation.store")
+    private var current: [[String: Any]] = []
+
+    func reset() {
+        queue.sync { current.removeAll() }
+    }
+
+    func append(name: String, args: Any, result: String) {
+        let entry: [String: Any] = [
+            "name": name,
+            "args": args,
+            "result": result,
+        ]
+        queue.sync { current.append(entry) }
+    }
+
+    func snapshot() -> [[String: Any]] { queue.sync { current } }
 } 

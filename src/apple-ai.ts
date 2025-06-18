@@ -4,23 +4,20 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { CoreMessage } from "ai";
 
 // Lightweight opt-in logger: set APPLE_AI_DEBUG=1 to enable
-function debug(...args: any[]) {
+function debug(...args: unknown[]) {
   if (process.env.APPLE_AI_DEBUG) console.debug("[apple-ai]", ...args);
 }
 
-function debugErr(...args: any[]) {
+function debugErr(...args: unknown[]) {
   if (process.env.APPLE_AI_DEBUG) console.error("[apple-ai]", ...args);
 }
 
 // Initialize native module using robust loader
 const native = getNativeModule();
 
-// Register binding helpers we added in Rust
-type ToolHandler = (args: any) => Promise<any> | any;
-
 const toolBindings = {
   setToolCallback: native.setToolCallback as (
-    callback: (err: any, toolId: number, argsJson: string) => void
+    callback: (err: Error | null, toolId: number, argsJson: string) => void
   ) => void,
   clearToolCallback: native.clearToolCallback as () => void,
   toolResult: native.toolResult as (toolId: number, resultJson: string) => void,
@@ -35,7 +32,7 @@ const toolBindings = {
     toolsJson: string,
     temperature: number | undefined,
     maxTokens: number | undefined,
-    cb: (err: any, chunk?: string | null) => void
+    cb: (err: unknown, chunk?: string | null) => void
   ) => void,
 };
 
@@ -47,16 +44,22 @@ export async function chatWithEphemeralTools(options: {
     | Array<{
         name: string;
         description?: string;
-        schema: z.ZodType<any>;
-        handler: (args: any) => any;
+        schema: z.ZodType<unknown>;
+        handler: (args: unknown) => unknown | Promise<unknown>;
       }>
     | Record<string, any>;
   temperature?: number;
   stream?: boolean;
-}): Promise<{ content?: string; error?: string }> {
+}): Promise<{ content?: string; error?: string; toolCalls?: any[] }> {
   const { messages, tools = {}, temperature = 0.7, stream = false } = options;
 
-  const toolMap = new Map<number, { tool: any; schema: any }>();
+  const toolMap = new Map<
+    number,
+    {
+      tool: { execute: (args: unknown) => unknown | Promise<unknown> };
+      schema: unknown;
+    }
+  >();
 
   try {
     // 1. Setup tools if provided
@@ -105,7 +108,7 @@ export async function chatWithEphemeralTools(options: {
     // Setup global tool callback once for all tools
     if (toolMap.size > 0) {
       toolBindings.setToolCallback(
-        async (err: any, toolId: number, argsJson: string) => {
+        async (err: Error | null, toolId: number, argsJson: string) => {
           if (err) {
             debugErr("Tool callback error:", err);
             return;
@@ -128,7 +131,7 @@ export async function chatWithEphemeralTools(options: {
           }
 
           try {
-            const args = JSON.parse(argsJson);
+            const args: unknown = JSON.parse(argsJson);
             debug(`Tool ${toolId} called with args:`, args);
             const result = await tool.execute(args);
             debug(`Tool ${toolId} returned:`, result);
@@ -154,7 +157,7 @@ export async function chatWithEphemeralTools(options: {
           JSON.stringify(toolSchemas),
           temperature,
           undefined, // maxTokens
-          (err: any, chunk?: string | null) => {
+          (err: unknown, chunk?: string | null) => {
             if (err) {
               reject(err);
               return;
@@ -168,16 +171,20 @@ export async function chatWithEphemeralTools(options: {
         );
       });
     } else {
-      const result = await toolBindings.generateResponseWithToolsNative(
+      const raw = await toolBindings.generateResponseWithToolsNative(
         JSON.stringify(messages),
         JSON.stringify(toolSchemas),
         temperature,
         undefined // maxTokens
       );
-      return { content: JSON.parse(result).text };
+      const parsed = JSON.parse(raw) as { text: string; toolCalls?: any[] };
+      return {
+        content: parsed.text,
+        ...(parsed.toolCalls ? { toolCalls: parsed.toolCalls } : {}),
+      };
     }
   } finally {
-    // Cleanup happens automatically when request completes
+    if (toolBindings.clearToolCallback) toolBindings.clearToolCallback();
   }
 }
 
@@ -283,12 +290,12 @@ export class AppleAISDK {
     let pendingResolve:
       | ((value: IteratorResult<ChatCompletionChunk>) => void)
       | null = null;
-    let pendingReject: ((reason?: any) => void) | null = null;
+    let pendingReject: ((reason?: unknown) => void) | null = null;
 
-    let error: any = null;
+    let error: unknown = null;
 
     // Push-based native callback
-    const handleChunk = (err: any, chunk?: string | null) => {
+    const handleChunk = (err: unknown, chunk?: string | null) => {
       if (err) {
         error = err;
         done = true;
@@ -394,7 +401,7 @@ export class AppleAISDK {
         done = true;
         return { value: undefined, done: true };
       },
-      async throw(err?: any): Promise<IteratorResult<ChatCompletionChunk>> {
+      async throw(err?: unknown): Promise<IteratorResult<ChatCompletionChunk>> {
         done = true;
         throw err;
       },
@@ -481,12 +488,12 @@ export class AppleAISDK {
 
     // Pending promise controls for consumer awaiting next chunk
     let pendingResolve: ((value: IteratorResult<string>) => void) | null = null;
-    let pendingReject: ((reason?: any) => void) | null = null;
+    let pendingReject: ((reason?: unknown) => void) | null = null;
 
-    let error: any = null;
+    let error: unknown = null;
 
     // Push-based native callback
-    const handleChunk = (err: any, chunk?: string | null) => {
+    const handleChunk = (err: unknown, chunk?: string | null) => {
       if (err) {
         error = err;
         done = true;
@@ -545,7 +552,7 @@ export class AppleAISDK {
         done = true;
         return { value: undefined, done: true };
       },
-      async throw(err?: any): Promise<IteratorResult<string>> {
+      async throw(err?: unknown): Promise<IteratorResult<string>> {
         done = true;
         throw err;
       },
@@ -556,7 +563,7 @@ export class AppleAISDK {
   }
 
   /** Generate a structured object based on a Zod/JSON schema */
-  async generateStructured<T = any>(params: {
+  async generateStructured<T = unknown>(params: {
     prompt: string;
     schemaJson: string; // JSON Schema as string
     temperature?: number;
@@ -576,7 +583,7 @@ export class AppleAISDK {
       );
     }
 
-    let parsed: any;
+    let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch {
@@ -593,7 +600,7 @@ export class AppleAISDK {
 
 export const appleAISDK = new AppleAISDK();
 
-export async function generateStructuredFromZod<T = any>(params: {
+export async function generateStructuredFromZod<T = unknown>(params: {
   prompt: string;
   schema: z.ZodType<T>;
   temperature?: number;
@@ -612,13 +619,19 @@ export function streamChatWithEphemeralTools(options: {
   tools: Array<{
     name: string;
     description?: string;
-    schema: z.ZodType<any>;
-    handler: (args: any) => any;
+    schema: z.ZodType<unknown>;
+    handler: (args: unknown) => unknown | Promise<unknown>;
   }>;
   temperature?: number;
 }): AsyncIterableIterator<string> {
   let toolId = 1;
-  const toolMap = new Map<number, { tool: any; schema: any }>();
+  const toolMap = new Map<
+    number,
+    {
+      tool: { execute: (args: unknown) => unknown | Promise<unknown> };
+      schema: unknown;
+    }
+  >();
 
   for (const tool of options.tools) {
     toolMap.set(toolId, {
@@ -653,7 +666,7 @@ export function streamChatWithEphemeralTools(options: {
 
   const queue: string[] = [];
   let done = false;
-  let error: any = null;
+  let error: unknown = null;
   let pendingResolve: ((value: IteratorResult<string>) => void) | null = null;
 
   toolBindings.generateResponseWithToolsStream(
@@ -695,7 +708,7 @@ export function streamChatWithEphemeralTools(options: {
       toolBindings.clearToolCallback?.();
       return { value: undefined, done: true };
     },
-    async throw(e) {
+    async throw(e: unknown) {
       toolBindings.clearToolCallback?.();
       throw e;
     },

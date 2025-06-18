@@ -6,7 +6,6 @@ import type {
 } from "@ai-sdk/provider";
 import type { ChatMessage } from "./apple-ai";
 import { appleAISDK as appleAIInstance } from "./apple-ai";
-import { appleAISDK } from "./apple-ai";
 import type { AppleAIModelId, AppleAISettings } from "./apple-ai-provider";
 
 export interface AppleAIChatConfig {

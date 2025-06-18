@@ -46,7 +46,7 @@ export function createAppleAI(
     settings: AppleAISettings = {}
   ) =>
     new AppleAIChatLanguageModel(modelId, settings, {
-      provider: "apple-ai.chat",
+      provider: "localhost",
       headers: options.headers ?? {},
       generateId: options.generateId ?? generateId,
     });
