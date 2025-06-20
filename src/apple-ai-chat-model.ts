@@ -11,14 +11,15 @@ import type {
   SharedV2Headers,
   SharedV2ProviderMetadata,
 } from "@ai-sdk/provider";
-import type { ChatCompletionChunk, ChatMessage } from "./apple-ai";
+import assert from "assert";
+import type { ChatMessage } from "./apple-ai";
 import {
   appleAISDK as appleAIInstance,
-  chatWithEphemeralTools,
   streamChatForVercelAISDK,
+  unified,
 } from "./apple-ai";
 import type { AppleAIModelId, AppleAISettings } from "./apple-ai-provider";
-import assert from "assert";
+import type { ModelMessage } from "ai";
 
 export interface AppleAIChatConfig {
   provider: string;
@@ -63,7 +64,196 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
     };
     warnings: Array<LanguageModelV2CallWarning>;
   }> {
-    throw new Error("Method not implemented.");
+    return this.generateResponse(options);
+  }
+
+  private async generateResponse(options: LanguageModelV2CallOptions): Promise<{
+    content: Array<LanguageModelV2Content>;
+    finishReason: LanguageModelV2FinishReason;
+    usage: LanguageModelV2Usage;
+    providerMetadata?: SharedV2ProviderMetadata;
+    request?: { body?: unknown };
+    response?: LanguageModelV2ResponseMetadata & {
+      headers?: SharedV2Headers;
+      body?: unknown;
+    };
+    warnings: Array<LanguageModelV2CallWarning>;
+  }> {
+    // Check Apple Intelligence availability
+    const availability = await appleAIInstance.checkAvailability();
+    if (!availability.available) {
+      throw new Error(
+        `Apple Intelligence not available: ${availability.reason}`
+      );
+    }
+
+    // Check if this is structured generation (Vercel AI SDK's generateObject)
+    const isStructuredGeneration =
+      options.responseFormat &&
+      options.responseFormat.type === "json" &&
+      options.responseFormat.schema;
+
+    if (isStructuredGeneration) {
+      return this.handleStructuredGeneration(options);
+    } else {
+      return this.handleRegularGeneration(options);
+    }
+  }
+
+  private async handleStructuredGeneration(
+    options: LanguageModelV2CallOptions
+  ): Promise<{
+    content: Array<LanguageModelV2Content>;
+    finishReason: LanguageModelV2FinishReason;
+    usage: LanguageModelV2Usage;
+    warnings: Array<LanguageModelV2CallWarning>;
+  }> {
+    assert(
+      options.responseFormat &&
+        options.responseFormat.type === "json" &&
+        options.responseFormat.schema,
+      "Structured generation must have a JSON schema"
+    );
+
+    const schema = options.responseFormat.schema;
+    const messages = this.convertPromptToMessages(options.prompt);
+
+    try {
+      // Use unified() with schema for structured generation
+      const result = await unified({
+        messages,
+        schema,
+        temperature: this.settings.temperature,
+        maxTokens: (options as any).maxOutputTokens ?? this.settings.maxTokens,
+      });
+
+      // The object is already parsed and typed
+      if (result.object) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result.object),
+            },
+          ],
+          finishReason: "stop",
+          usage: {
+            inputTokens: undefined,
+            outputTokens: undefined,
+            totalTokens: undefined,
+          },
+          warnings: [],
+        };
+      } else {
+        // Fallback to text if no object was generated
+        return {
+          content: [{ type: "text", text: result.text }],
+          finishReason: "stop",
+          usage: {
+            inputTokens: undefined,
+            outputTokens: undefined,
+            totalTokens: undefined,
+          },
+          warnings: [],
+        };
+      }
+    } catch (error) {
+      throw new Error(
+        `Structured generation failed: ${(error as Error).message}`
+      );
+    }
+  }
+
+  private async handleRegularGeneration(
+    options: LanguageModelV2CallOptions
+  ): Promise<{
+    content: Array<LanguageModelV2Content>;
+    finishReason: LanguageModelV2FinishReason;
+    usage: LanguageModelV2Usage;
+    warnings: Array<LanguageModelV2CallWarning>;
+  }> {
+    // Handle tools if present
+    if (options.tools && options.tools.length > 0) {
+      // Convert Vercel AI SDK tools to our format
+      const epTools = options.tools.map((t) => {
+        if (t.type !== "function") {
+          throw new Error(`Unsupported tool type: ${t?.type ?? "unknown"}`);
+        }
+        return {
+          name: t.name,
+          description: t.description,
+          jsonSchema: t.inputSchema,
+          handler: async (args: Record<string, unknown>) => {
+            // Placeholder - tools will be handled by Vercel AI SDK
+            return {};
+          },
+        };
+      });
+
+      const messages = this.convertPromptToMessages(options.prompt);
+
+      const result = await unified({
+        messages: messages,
+        tools: epTools,
+        temperature: this.settings.temperature,
+        maxTokens: options.maxOutputTokens ?? this.settings.maxTokens,
+      });
+
+      // Handle tool calls if present
+      if (result.toolCalls && result.toolCalls.length > 0) {
+        // Return tool calls for Vercel AI SDK to handle
+        const toolCallContent: LanguageModelV2Content[] = result.toolCalls.map(
+          (call) => ({
+            type: "tool-call",
+            toolCallType: "function",
+            toolCallId: call.id,
+            toolName: call.function.name,
+            input: JSON.parse(call.function.arguments),
+          })
+        );
+
+        return {
+          content: toolCallContent,
+          finishReason: "tool-calls",
+          usage: {
+            inputTokens: undefined,
+            outputTokens: undefined,
+            totalTokens: undefined,
+          },
+          warnings: [],
+        };
+      }
+
+      // Regular text response
+      return {
+        content: [{ type: "text", text: result.text || "" }],
+        finishReason: "stop",
+        usage: {
+          inputTokens: undefined,
+          outputTokens: undefined,
+          totalTokens: undefined,
+        },
+        warnings: [],
+      };
+    } else {
+      // No tools - simple chat
+      const messages = this.convertPromptToMessages(options.prompt);
+      const result = await unified({
+        messages: messages,
+        temperature: this.settings.temperature,
+      });
+
+      return {
+        content: [{ type: "text", text: result.text || "" }],
+        finishReason: "stop",
+        usage: {
+          inputTokens: undefined,
+          outputTokens: undefined,
+          totalTokens: undefined,
+        },
+        warnings: [],
+      };
+    }
   }
 
   supportsUrl?(url: URL): boolean {
@@ -94,7 +284,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
   }
 
   private createToolEnabledStream(
-    messages: any[],
+    messages: ChatMessage[],
     tools: LanguageModelV2CallOptions["tools"]
   ): Promise<{ stream: ReadableStream<LanguageModelV2StreamPart> }> {
     // Build ephemeral tools for native layer
@@ -115,7 +305,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
 
     // Use the Vercel AI SDK specific streaming function
     const nativeStream = streamChatForVercelAISDK({
-      messages,
+      messages: messages as ModelMessage[],
       tools: epTools,
       temperature: this.settings.temperature,
     });
@@ -125,7 +315,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
   }
 
   private createRegularStream(
-    messages: any[]
+    messages: ChatMessage[]
   ): Promise<{ stream: ReadableStream<LanguageModelV2StreamPart> }> {
     const streamNoTools = appleAIInstance.streamChatCompletion(messages, {
       temperature: this.settings.temperature,
@@ -232,24 +422,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
   ): ChatMessage {
     return {
       role: "system" as const,
-      content: Array.isArray(message.content)
-        ? message.content
-            .map((part: any) => {
-              switch (part.type) {
-                case "text":
-                  return part.text;
-                case "tool-call":
-                  return JSON.stringify(part.tool_calls);
-                case "tool-result":
-                  return JSON.stringify(part.output);
-                case "start-step":
-                  return JSON.stringify(part.step);
-                default:
-                  return `[unsupported content - ${part.type}]`;
-              }
-            })
-            .join("\n")
-        : message.content,
+      content: message.content,
     };
   }
 

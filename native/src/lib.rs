@@ -19,52 +19,23 @@ extern "C" {
     fn apple_ai_get_supported_languages_count() -> c_int;
     fn apple_ai_get_supported_language(index: c_int) -> *mut c_char;
 
-    fn apple_ai_generate_response(
-        prompt: *const c_char,
-        temperature: c_double,
-        max_tokens: c_int,
-    ) -> *mut c_char;
-
-    fn apple_ai_generate_response_with_history(
-        messages_json: *const c_char,
-        temperature: c_double,
-        max_tokens: c_int,
-    ) -> *mut c_char;
-
-    fn apple_ai_generate_response_stream(
-        prompt: *const c_char,
-        temperature: c_double,
-        max_tokens: c_int,
-        on_chunk: extern "C" fn(*const c_char),
-    );
-
-    fn apple_ai_generate_response_structured(
-        prompt: *const c_char,
-        schema_json: *const c_char,
-        temperature: c_double,
-        max_tokens: c_int,
-    ) -> *mut c_char;
-
     // Tool callback registration and tool-based generation
     fn apple_ai_register_tool_callback(
         cb: Option<extern "C" fn(u64, *const c_char) -> *mut c_char>,
     );
     fn apple_ai_tool_result_callback(tool_id: u64, result_json: *const c_char);
 
-    fn apple_ai_generate_response_with_tools(
+    // Unified generation function
+    fn apple_ai_generate_unified(
         messages_json: *const c_char,
-        tools_json: *const c_char,
+        tools_json: *const c_char,  // nullable
+        schema_json: *const c_char, // nullable
         temperature: c_double,
         max_tokens: c_int,
+        stream: bool,
+        stop_after_tool_calls: bool,                    // new parameter
+        on_chunk: Option<extern "C" fn(*const c_char)>, // nullable
     ) -> *mut c_char;
-
-    fn apple_ai_generate_response_with_tools_stream(
-        messages_json: *const c_char,
-        tools_json: *const c_char,
-        temperature: c_double,
-        max_tokens: c_int,
-        on_chunk: extern "C" fn(*const c_char),
-    );
 }
 
 // --------------------------------------------------
@@ -137,248 +108,7 @@ pub fn get_supported_languages() -> napi::Result<Vec<String>> {
 
 // ---------------- Async generation tasks ----------------
 
-pub struct GenerateTask {
-    pub prompt: String,
-    pub temperature: f64,
-    pub max_tokens: i32,
-}
-
-impl napi::Task for GenerateTask {
-    type Output = String;
-    type JsValue = JsString;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        ensure_initialized();
-        let c_prompt = CString::new(self.prompt.clone())
-            .map_err(|_| napi::Error::from_reason("Prompt contained null byte".to_string()))?;
-        unsafe {
-            let result_ptr = apple_ai_generate_response(
-                c_prompt.as_ptr(),
-                self.temperature as c_double,
-                self.max_tokens as c_int,
-            );
-            if result_ptr.is_null() {
-                return Err(napi::Error::from_reason(
-                    "Generation returned null".to_string(),
-                ));
-            }
-            Ok(take_c_string(result_ptr))
-        }
-    }
-
-    fn resolve(&mut self, env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        env.create_string(&output)
-    }
-}
-
-#[napi]
-pub fn generate_response(
-    prompt: String,
-    #[napi(ts_arg_type = "number | undefined")] temperature: Option<f64>,
-    #[napi(ts_arg_type = "number | undefined")] max_tokens: Option<i32>,
-) -> napi::Result<AsyncTask<GenerateTask>> {
-    let task = GenerateTask {
-        prompt,
-        temperature: temperature.unwrap_or(0.0),
-        max_tokens: max_tokens.unwrap_or(0),
-    };
-    Ok(AsyncTask::new(task))
-}
-
-// Task for history
-pub struct GenerateHistoryTask {
-    pub messages_json: String,
-    pub temperature: f64,
-    pub max_tokens: i32,
-}
-
-impl napi::Task for GenerateHistoryTask {
-    type Output = String;
-    type JsValue = JsString;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        ensure_initialized();
-        let c_json = CString::new(self.messages_json.clone())
-            .map_err(|_| napi::Error::from_reason("JSON contained null byte".to_string()))?;
-        unsafe {
-            let result_ptr = apple_ai_generate_response_with_history(
-                c_json.as_ptr(),
-                self.temperature as c_double,
-                self.max_tokens as c_int,
-            );
-            if result_ptr.is_null() {
-                return Err(napi::Error::from_reason(
-                    "Generation returned null".to_string(),
-                ));
-            }
-            Ok(take_c_string(result_ptr))
-        }
-    }
-
-    fn resolve(&mut self, env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        env.create_string(&output)
-    }
-}
-
-#[napi]
-pub fn generate_response_with_history(
-    messages_json: String,
-    #[napi(ts_arg_type = "number | undefined")] temperature: Option<f64>,
-    #[napi(ts_arg_type = "number | undefined")] max_tokens: Option<i32>,
-) -> napi::Result<AsyncTask<GenerateHistoryTask>> {
-    let task = GenerateHistoryTask {
-        messages_json,
-        temperature: temperature.unwrap_or(0.0),
-        max_tokens: max_tokens.unwrap_or(0),
-    };
-    Ok(AsyncTask::new(task))
-}
-
-// Safe global stream state ---------------------------------------------------
-
-struct StreamState {
-    tsfn: ThreadsafeFunction<String, ErrorStrategy::CalleeHandled>,
-    _prompt: CString, // keeps the CString alive for the duration of the stream
-}
-
-static STREAM_STATE: OnceLock<Mutex<Option<StreamState>>> = OnceLock::new();
-
-#[inline(always)]
-fn stream_state() -> &'static Mutex<Option<StreamState>> {
-    STREAM_STATE.get_or_init(|| Mutex::new(None))
-}
-
 const ERROR_SENTINEL: u8 = 0x02;
-
-extern "C" fn chunk_callback(ptr: *const c_char) {
-    // get mutex
-    let mutex = stream_state();
-    let mut guard = mutex.lock().unwrap();
-
-    if let Some(state) = guard.as_mut() {
-        if ptr.is_null() {
-            // End of stream
-            let _ = state
-                .tsfn
-                .call(Ok("".to_string()), ThreadsafeFunctionCallMode::NonBlocking);
-            let _ = state.tsfn.clone().abort();
-            *guard = None;
-            return;
-        }
-
-        // Take ownership and free C string once here
-        let slice_owned = take_c_string(ptr as *mut c_char);
-        if slice_owned.is_empty() {
-            return;
-        }
-
-        let bytes = slice_owned.as_bytes();
-        if !bytes.is_empty() && bytes[0] == ERROR_SENTINEL {
-            let msg = String::from_utf8_lossy(&bytes[1..]).into_owned();
-            let _ = state.tsfn.call(
-                Err(napi::Error::from_reason(msg)),
-                ThreadsafeFunctionCallMode::NonBlocking,
-            );
-            return;
-        }
-
-        let _ = state
-            .tsfn
-            .call(Ok(slice_owned), ThreadsafeFunctionCallMode::NonBlocking);
-    }
-}
-
-#[napi]
-pub fn generate_response_stream(
-    prompt: String,
-    #[napi(ts_arg_type = "number | undefined")] temperature: Option<f64>,
-    #[napi(ts_arg_type = "number | undefined")] max_tokens: Option<i32>,
-    callback: JsFunction,
-) -> napi::Result<()> {
-    let ts_fn: ThreadsafeFunction<String, ErrorStrategy::CalleeHandled> = callback
-        .create_threadsafe_function(0, |ctx: ThreadSafeCallContext<String>| {
-            let env = ctx.env;
-            let js_string = env.create_string(&ctx.value)?;
-            Ok(vec![js_string]) // value will be passed as second arg, error injected automatically
-        })?;
-
-    // Prepare stream state safely
-    let prompt_cstring = CString::new(prompt)?;
-    {
-        let mut guard = stream_state().lock().unwrap();
-        *guard = Some(StreamState {
-            tsfn: ts_fn,
-            _prompt: prompt_cstring.clone(),
-        });
-    }
-
-    // invoke Swift stream (pointer valid due to prompt_cstring clone in state)
-    unsafe {
-        apple_ai_generate_response_stream(
-            prompt_cstring.as_ptr(),
-            temperature.unwrap_or(0.0),
-            max_tokens.unwrap_or(0),
-            chunk_callback,
-        );
-    }
-    Ok(())
-}
-
-// ---------------- Structured generation task ----------------
-
-pub struct GenerateStructuredTask {
-    pub prompt: String,
-    pub schema_json: String,
-    pub temperature: f64,
-    pub max_tokens: i32,
-}
-
-impl napi::Task for GenerateStructuredTask {
-    type Output = String;
-    type JsValue = JsString;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        ensure_initialized();
-        let c_prompt = CString::new(self.prompt.clone())
-            .map_err(|_| napi::Error::from_reason("Prompt contained null byte".to_string()))?;
-        let c_schema = CString::new(self.schema_json.clone())
-            .map_err(|_| napi::Error::from_reason("Schema contained null byte".to_string()))?;
-        unsafe {
-            let result_ptr = apple_ai_generate_response_structured(
-                c_prompt.as_ptr(),
-                c_schema.as_ptr(),
-                self.temperature as c_double,
-                self.max_tokens as c_int,
-            );
-            if result_ptr.is_null() {
-                return Err(napi::Error::from_reason(
-                    "Generation returned null".to_string(),
-                ));
-            }
-            Ok(take_c_string(result_ptr))
-        }
-    }
-
-    fn resolve(&mut self, env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        env.create_string(&output)
-    }
-}
-
-#[napi]
-pub fn generate_response_structured(
-    prompt: String,
-    schema_json: String,
-    #[napi(ts_arg_type = "number | undefined")] temperature: Option<f64>,
-    #[napi(ts_arg_type = "number | undefined")] max_tokens: Option<i32>,
-) -> napi::Result<AsyncTask<GenerateStructuredTask>> {
-    let task = GenerateStructuredTask {
-        prompt,
-        schema_json,
-        temperature: temperature.unwrap_or(0.0),
-        max_tokens: max_tokens.unwrap_or(0),
-    };
-    Ok(AsyncTask::new(task))
-}
 
 // ---------- Global tool handler state ----------
 
@@ -487,32 +217,55 @@ extern "C" fn js_tool_dispatch(_tool_id: u64, _args_json: *const c_char) -> *mut
     CString::new(response).unwrap().into_raw()
 }
 
-// ---------------- Tool-based generation task ----------------
+// ---------------- Unified Generation ----------------
 
-pub struct GenerateWithToolsTask {
+pub struct GenerateUnifiedTask {
     pub messages_json: String,
-    pub tools_json: String,
+    pub tools_json: Option<String>,
+    pub schema_json: Option<String>,
     pub temperature: f64,
     pub max_tokens: i32,
+    pub stop_after_tool_calls: bool, // new field
 }
 
-impl napi::Task for GenerateWithToolsTask {
+impl napi::Task for GenerateUnifiedTask {
     type Output = String;
     type JsValue = JsString;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         ensure_initialized();
-        ensure_tool_callback_registered();
+        if self.tools_json.is_some() {
+            ensure_tool_callback_registered();
+        }
+
         let c_messages = CString::new(self.messages_json.clone())
             .map_err(|_| napi::Error::from_reason("Messages contained null byte".to_string()))?;
-        let c_tools = CString::new(self.tools_json.clone())
+
+        // Convert optional strings to nullable pointers
+        let c_tools = self
+            .tools_json
+            .as_ref()
+            .map(|s| CString::new(s.clone()))
+            .transpose()
             .map_err(|_| napi::Error::from_reason("Tools JSON contained null byte".to_string()))?;
+
+        let c_schema = self
+            .schema_json
+            .as_ref()
+            .map(|s| CString::new(s.clone()))
+            .transpose()
+            .map_err(|_| napi::Error::from_reason("Schema JSON contained null byte".to_string()))?;
+
         unsafe {
-            let result_ptr = apple_ai_generate_response_with_tools(
+            let result_ptr = apple_ai_generate_unified(
                 c_messages.as_ptr(),
-                c_tools.as_ptr(),
+                c_tools.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+                c_schema.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
                 self.temperature as c_double,
                 self.max_tokens as c_int,
+                false, // not streaming
+                self.stop_after_tool_calls,
+                None, // no callback for non-streaming
             );
             if result_ptr.is_null() {
                 return Err(napi::Error::from_reason(
@@ -529,39 +282,39 @@ impl napi::Task for GenerateWithToolsTask {
 }
 
 #[napi]
-pub fn generate_response_with_tools_native(
+pub fn generate_unified(
     messages_json: String,
-    tools_json: String,
+    #[napi(ts_arg_type = "string | undefined | null")] tools_json: Option<String>,
+    #[napi(ts_arg_type = "string | undefined | null")] schema_json: Option<String>,
     #[napi(ts_arg_type = "number | undefined")] temperature: Option<f64>,
     #[napi(ts_arg_type = "number | undefined")] max_tokens: Option<i32>,
-) -> napi::Result<AsyncTask<GenerateWithToolsTask>> {
-    let task = GenerateWithToolsTask {
+    #[napi(ts_arg_type = "boolean | undefined")] stop_after_tool_calls: Option<bool>,
+) -> napi::Result<AsyncTask<GenerateUnifiedTask>> {
+    let task = GenerateUnifiedTask {
         messages_json,
-        tools_json,
+        tools_json: tools_json.filter(|s| !s.is_empty()),
+        schema_json: schema_json.filter(|s| !s.is_empty()),
         temperature: temperature.unwrap_or(0.0),
         max_tokens: max_tokens.unwrap_or(0),
+        stop_after_tool_calls: stop_after_tool_calls.unwrap_or(true), // default to true
     };
     Ok(AsyncTask::new(task))
 }
 
 #[napi]
-pub fn unregister_tool_handler(_id: f64) -> napi::Result<()> {
-    // No longer needed with new async approach
-    Ok(())
-}
-
-// tool stream task ----------------
-
-#[napi]
-pub fn generate_response_with_tools_stream(
+pub fn generate_unified_stream(
     messages_json: String,
-    tools_json: String,
+    #[napi(ts_arg_type = "string | undefined | null")] tools_json: Option<String>,
+    #[napi(ts_arg_type = "string | undefined | null")] schema_json: Option<String>,
     #[napi(ts_arg_type = "number | undefined")] temperature: Option<f64>,
     #[napi(ts_arg_type = "number | undefined")] max_tokens: Option<i32>,
+    #[napi(ts_arg_type = "boolean | undefined")] stop_after_tool_calls: Option<bool>,
     callback: JsFunction,
 ) -> napi::Result<()> {
     ensure_initialized();
-    ensure_tool_callback_registered();
+    if tools_json.is_some() {
+        ensure_tool_callback_registered();
+    }
 
     let ts_fn: ThreadsafeFunction<String, ErrorStrategy::CalleeHandled> = callback
         .create_threadsafe_function(0, |ctx: ThreadSafeCallContext<String>| {
@@ -570,30 +323,39 @@ pub fn generate_response_with_tools_stream(
             Ok(vec![js_string])
         })?;
 
-    // prepare state similar to existing stream but separate mutex
-    struct LocalState {
+    // Unified stream state
+    struct UnifiedState {
         tsfn: ThreadsafeFunction<String, ErrorStrategy::CalleeHandled>,
         _messages: CString,
-        _tools: CString,
+        _tools: Option<CString>,
+        _schema: Option<CString>,
     }
 
-    static STREAM_TOOLS: OnceLock<Mutex<Option<LocalState>>> = OnceLock::new();
-    let mutex = STREAM_TOOLS.get_or_init(|| Mutex::new(None));
+    static UNIFIED_STREAM: OnceLock<Mutex<Option<UnifiedState>>> = OnceLock::new();
+    let mutex = UNIFIED_STREAM.get_or_init(|| Mutex::new(None));
 
     let c_messages = CString::new(messages_json)?;
-    let c_tools = CString::new(tools_json)?;
+    let c_tools = tools_json
+        .filter(|s| !s.is_empty())
+        .map(|s| CString::new(s))
+        .transpose()?;
+    let c_schema = schema_json
+        .filter(|s| !s.is_empty())
+        .map(|s| CString::new(s))
+        .transpose()?;
 
     {
         let mut guard = mutex.lock().unwrap();
-        *guard = Some(LocalState {
+        *guard = Some(UnifiedState {
             tsfn: ts_fn.clone(),
             _messages: c_messages.clone(),
             _tools: c_tools.clone(),
+            _schema: c_schema.clone(),
         });
     }
 
-    extern "C" fn chunk_cb(ptr: *const c_char) {
-        let mutex = STREAM_TOOLS.get().unwrap();
+    extern "C" fn unified_chunk_cb(ptr: *const c_char) {
+        let mutex = UNIFIED_STREAM.get().unwrap();
         let mut guard = mutex.lock().unwrap();
         if let Some(state) = guard.as_mut() {
             if ptr.is_null() {
@@ -604,7 +366,24 @@ pub fn generate_response_with_tools_stream(
                 *guard = None;
                 return;
             }
-            let slice_owned = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
+
+            // Take ownership and free C string
+            let slice_owned = take_c_string(ptr as *mut c_char);
+            if slice_owned.is_empty() {
+                return;
+            }
+
+            // Check for error sentinel
+            let bytes = slice_owned.as_bytes();
+            if !bytes.is_empty() && bytes[0] == ERROR_SENTINEL {
+                let msg = String::from_utf8_lossy(&bytes[1..]).into_owned();
+                let _ = state.tsfn.call(
+                    Err(napi::Error::from_reason(msg)),
+                    ThreadsafeFunctionCallMode::NonBlocking,
+                );
+                return;
+            }
+
             let _ = state
                 .tsfn
                 .call(Ok(slice_owned), ThreadsafeFunctionCallMode::NonBlocking);
@@ -612,12 +391,15 @@ pub fn generate_response_with_tools_stream(
     }
 
     unsafe {
-        apple_ai_generate_response_with_tools_stream(
+        apple_ai_generate_unified(
             c_messages.as_ptr(),
-            c_tools.as_ptr(),
+            c_tools.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+            c_schema.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
             temperature.unwrap_or(0.0) as c_double,
             max_tokens.unwrap_or(0) as c_int,
-            chunk_cb,
+            true,                                  // streaming
+            stop_after_tool_calls.unwrap_or(true), // default to true
+            Some(unified_chunk_cb),
         );
     }
     Ok(())

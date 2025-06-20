@@ -95,112 +95,6 @@ public func appleAIGetSupportedLanguage(index: Int32) -> UnsafeMutablePointer<CC
     return strdup("Unknown")
 }
 
-@_cdecl("apple_ai_generate_response")
-public func appleAIGenerateResponse(
-    prompt: UnsafePointer<CChar>,
-    temperature: Double,
-    maxTokens: Int32
-) -> UnsafeMutablePointer<CChar>? {
-    let promptString = String(cString: prompt)
-
-    // Use semaphore to convert async to sync
-    let semaphore = DispatchSemaphore(value: 0)
-    var result: String = "Error: No response"
-
-    Task {
-        do {
-            let model = SystemLanguageModel.default
-
-            // Check availability first
-            let availability = model.availability
-            guard case .available = availability else {
-                result = "Error: Apple Intelligence not available"
-                semaphore.signal()
-                return
-            }
-
-            // Create session
-            let session = LanguageModelSession()
-
-            // Create generation options
-            var options = GenerationOptions()
-            if temperature > 0 {
-                options = GenerationOptions(
-                    temperature: temperature,
-                    maximumResponseTokens: maxTokens > 0 ? Int(maxTokens) : nil)
-            } else if maxTokens > 0 {
-                options = GenerationOptions(maximumResponseTokens: Int(maxTokens))
-            }
-
-            // Generate response
-            let response = try await session.respond(to: promptString, options: options)
-            result = response.content
-
-        } catch {
-            result = "Error: \(error.localizedDescription)"
-        }
-
-        semaphore.signal()
-    }
-
-    // Wait for async operation to complete
-    semaphore.wait()
-
-    return strdup(result)
-}
-
-@_cdecl("apple_ai_generate_response_with_history")
-public func appleAIGenerateResponseWithHistory(
-    messagesJson: UnsafePointer<CChar>,
-    temperature: Double,
-    maxTokens: Int32
-) -> UnsafeMutablePointer<CChar>? {
-    let messagesJsonString = String(cString: messagesJson)
-
-    // Use semaphore to convert async to sync
-    let semaphore = DispatchSemaphore(value: 0)
-    var result: String = "Error: No response"
-
-    Task {
-        do {
-            // Use shared conversation preparation logic
-            let context = try prepareConversationContext(
-                messagesJsonString: messagesJsonString,
-                temperature: temperature,
-                maxTokens: maxTokens
-            )
-
-            // Create session with conversation history
-            let transcript = Transcript(entries: context.transcriptEntries)
-            let session = LanguageModelSession(transcript: transcript)
-
-            // Generate response using the current prompt with history
-            let response = try await session.respond(
-                to: context.currentPrompt, options: context.options)
-            result = response.content
-
-        } catch let error as ConversationError {
-            switch error {
-            case .intelligenceUnavailable(let reason):
-                result = "Error: Apple Intelligence not available - \(reason)"
-            case .invalidJSON(let reason):
-                result = "Error: \(reason)"
-            case .noMessages:
-                result = "Error: No messages provided"
-            }
-        } catch {
-            result = "Error: \(error.localizedDescription)"
-        }
-
-        semaphore.signal()
-    }
-
-    // Wait for async operation to complete
-    semaphore.wait()
-
-    return strdup(result)
-}
-
 @_cdecl("apple_ai_free_string")
 public func appleAIFreeString(ptr: UnsafeMutablePointer<CChar>?) {
     if let ptr = ptr {
@@ -478,47 +372,6 @@ private func createToolOutputEntry(from message: ChatMessage) -> [Transcript.Ent
     return entries
 }
 
-@available(macOS 26.0, *)
-@_cdecl("apple_ai_generate_response_stream")
-public func appleAIGenerateResponseStream(
-    _ prompt: UnsafePointer<CChar>,
-    _ temperature: Double,
-    _ maxTokens: Int32,
-    _ onChunk: (@convention(c) (UnsafePointer<CChar>?) -> Void)
-) {
-    let promptString = String(cString: prompt)
-
-    Task.detached {
-        do {
-            let model = SystemLanguageModel.default
-            guard case .available = model.availability else {
-                emitError("Model unavailable", to: onChunk)
-                return
-            }
-
-            var options = GenerationOptions()
-            if temperature != 0.0 { options.temperature = temperature }
-            if maxTokens > 0 { options.maximumResponseTokens = Int(maxTokens) }
-
-            let session = LanguageModelSession(model: model)
-
-            var prev = ""
-            for try await cumulative in session.streamResponse(to: promptString, options: options) {
-                let delta = String(cumulative.dropFirst(prev.count))
-                prev = cumulative
-                guard !delta.isEmpty, delta.first != ERROR_SENTINEL else { continue }
-
-                delta.withCString { cStr in
-                    onChunk(strdup(cStr))
-                }
-            }
-            onChunk(nil)  // stream finished
-        } catch {
-            emitError(error.localizedDescription, to: onChunk)
-        }
-    }
-}
-
 // Control-B (0x02) sentinel prefix marks an error string in streaming callbacks
 private let ERROR_SENTINEL: Character = "\u{0002}"
 
@@ -597,127 +450,6 @@ private struct JSProxyTool: Tool {
         // Return placeholder output to allow generation to continue naturally
         return ToolOutput("Tool call executed")
     }
-}
-
-// MARK: - Updated Tool Calling implementation
-
-@available(macOS 26.0, *)
-@_cdecl("apple_ai_generate_response_with_tools")
-public func appleAIGenerateResponseWithTools(
-    messagesJson: UnsafePointer<CChar>,
-    toolsJson: UnsafePointer<CChar>,
-    temperature: Double,
-    maxTokens: Int32
-) -> UnsafeMutablePointer<CChar>? {
-    let messagesJsonString = String(cString: messagesJson)
-    let toolsJsonString = String(cString: toolsJson)
-
-    let semaphore = DispatchSemaphore(value: 0)
-    var result: String = "Error: No response"
-
-    Task {
-        do {
-            // Use shared conversation preparation logic
-            let context = try prepareConversationContext(
-                messagesJsonString: messagesJsonString,
-                temperature: temperature,
-                maxTokens: maxTokens
-            )
-
-            // Decode tool definitions (now expect id,name,description,parameters)
-            guard let toolsData = toolsJsonString.data(using: .utf8),
-                let rawToolsArr = try JSONSerialization.jsonObject(with: toolsData)
-                    as? [[String: Any]]
-            else {
-                result = "Error: Invalid tools JSON"
-                semaphore.signal()
-                return
-            }
-
-            var tools: [any Tool] = []
-            for dict in rawToolsArr {
-                guard let idNum = dict["id"] as? UInt64,
-                    let name = dict["name"] as? String
-                else { continue }
-                let description = dict["description"] as? String ?? ""
-                let paramsSchemaJson = dict["parameters"] as? [String: Any] ?? [:]
-                let (root, deps) = buildSchemasFromJson(paramsSchemaJson)
-                let genSchema = try GenerationSchema(root: root, dependencies: deps)
-                let proxy = JSProxyTool(
-                    toolID: idNum, name: name, description: description, parametersSchema: genSchema
-                )
-                tools.append(proxy)
-            }
-
-            // Build final transcript with tools embedded as definitions
-            var finalEntries = context.transcriptEntries
-            if !tools.isEmpty {
-                let instructions = Transcript.Instructions(
-                    segments: [],
-                    toolDefinitions: tools.map { tool in
-                        Transcript.ToolDefinition(
-                            name: tool.name, description: tool.description,
-                            parameters: tool.parameters)
-                    })
-                finalEntries.insert(.instructions(instructions), at: 0)
-            }
-
-            let transcript = Transcript(entries: finalEntries)
-            let session = LanguageModelSession(tools: tools, transcript: transcript)
-
-            // Reset tool call collection
-            ToolCallCollector.shared.reset()
-
-            let response = try await session.respond(
-                to: context.currentPrompt, options: context.options)
-
-            let text = response.content
-            let toolCalls = ToolCallCollector.shared.getAllCalls()
-
-            // Format response with OpenAI-compatible structure
-            var json: [String: Any] = [:]
-
-            if !toolCalls.isEmpty {
-                // Convert to OpenAI-style tool_calls format
-                let formattedCalls = toolCalls.map { call in
-                    [
-                        "id": call.callId,
-                        "type": "function",
-                        "function": [
-                            "name": call.name,
-                            "arguments":
-                                (try? String(
-                                    data: JSONSerialization.data(withJSONObject: call.arguments),
-                                    encoding: .utf8)) ?? "{}",
-                        ],
-                    ]
-                }
-                json["text"] = "(awaiting tool execution)"
-                json["toolCalls"] = formattedCalls
-            } else {
-                json["text"] = text
-            }
-
-            // Convert to JSON string
-            let jsonData = try JSONSerialization.data(withJSONObject: json, options: [])
-            result = String(data: jsonData, encoding: .utf8) ?? "Error: Encoding failure"
-        } catch let error as ConversationError {
-            switch error {
-            case .intelligenceUnavailable(let reason):
-                result = "Error: Apple Intelligence not available - \(reason)"
-            case .invalidJSON(let reason):
-                result = "Error: \(reason)"
-            case .noMessages:
-                result = "Error: No messages provided"
-            }
-        } catch {
-            result = "Error: \(error.localizedDescription)"
-        }
-        semaphore.signal()
-    }
-
-    semaphore.wait()
-    return strdup(result)
 }
 
 // MARK: - Tool Definition Structure
@@ -813,87 +545,6 @@ private struct AnyCodable: Codable {
 #if canImport(FoundationModels)
     import FoundationModels
 #endif
-
-@available(macOS 26.0, *)
-@_cdecl("apple_ai_generate_response_structured")
-public func appleAIGenerateResponseStructured(
-    prompt: UnsafePointer<CChar>,
-    schemaJson: UnsafePointer<CChar>,
-    temperature: Double,
-    maxTokens: Int32
-) -> UnsafeMutablePointer<CChar>? {
-    let promptString = String(cString: prompt)
-    let schemaJsonString = String(cString: schemaJson)
-
-    // Use semaphore to convert async to sync
-    let semaphore = DispatchSemaphore(value: 0)
-    var result: String = "Error: No response"
-
-    Task {
-        do {
-            let model = SystemLanguageModel.default
-            guard case .available = model.availability else {
-                result = "Error: Apple Intelligence not available"
-                semaphore.signal()
-                return
-            }
-
-            // Parse JSON Schema into dictionary
-            guard let data = schemaJsonString.data(using: .utf8),
-                let jsonObj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else {
-                result = "Error: Invalid JSON Schema"
-                semaphore.signal()
-                return
-            }
-
-            // Build schema(s) from JSON Schema, including definitions
-            let (rootSchema, deps) = buildSchemasFromJson(jsonObj)
-            let generationSchema = try GenerationSchema(root: rootSchema, dependencies: deps)
-
-            // Create generation options
-            var options = GenerationOptions()
-            if temperature > 0 {
-                options.temperature = temperature
-            }
-            if maxTokens > 0 {
-                options.maximumResponseTokens = Int(maxTokens)
-            }
-
-            // Start session
-            let session = LanguageModelSession(model: model)
-            let response = try await session.respond(
-                to: promptString,
-                schema: generationSchema,
-                includeSchemaInPrompt: true,
-                options: options
-            )
-
-            let generatedContent = response.content
-
-            // Convert GeneratedContent to JSON-compatible structure
-            let objectJson: Any = generatedContentToJSON(generatedContent)
-
-            // Provide textual fallback as well
-            let textRepresentation = String(describing: generatedContent)
-
-            let json: [String: Any] = [
-                "text": textRepresentation,
-                "object": objectJson,
-            ]
-
-            // Convert to JSON string
-            let jsonData = try JSONSerialization.data(withJSONObject: json, options: [])
-            result = String(data: jsonData, encoding: .utf8) ?? "Error: Encoding failure"
-        } catch {
-            result = "Error: \(error.localizedDescription)"
-        }
-        semaphore.signal()
-    }
-
-    semaphore.wait()
-    return strdup(result)
-}
 
 @available(macOS 26.0, *)
 private func convertJSONSchemaToDynamic(_ dict: [String: Any], name: String? = nil)
@@ -1043,130 +694,6 @@ private func buildSchemasFromJson(_ json: [String: Any]) -> (
     return (root, dependencies)
 }
 
-/// Generates a streaming response from Apple Intelligence with optional tool-calling support.
-///
-/// This C-compatible wrapper bridges the Swift async streaming API to a C callback.
-/// It performs the following high-level steps:
-/// 1. Converts the incoming C strings (messages and tools) into Swift `String`s.
-/// 2. Deserializes the chat history and tool definitions from JSON.
-/// 3. Creates `JSProxyTool` instances for each supplied tool and embeds them, along with the
-///    prior conversation, into a `LanguageModelSession` transcript.
-/// 4. Streams the assistant's response; every incremental delta is duplicated with `strdup` and
-///    passed to the `onChunk` callback so that the Rust/JS side can consume it without threading
-///    issues.
-/// 5. Signals completion by invoking the callback with `nil`, or propagates errors by sending a
-///    string prefixed by the ASCII Control-B (0x02) sentinel defined by `ERROR_SENTINEL`.
-///
-/// - Parameters:
-///   - messagesJson: A JSON-encoded array of chat messages (`[{"role":"user","content":"..."}, …]`).
-///   - toolsJson:    A JSON-encoded array describing tools (`[{"id":1,"name":"weather",…}]`).
-///   - temperature:  Sampling temperature; `0` uses the model default.
-///   - maxTokens:    Maximum number of tokens to generate (≤ 0 means the model default).
-///   - onChunk:      Callback invoked with each UTF-8 text delta; receives `nil` when streaming ends.
-///
-@available(macOS 26.0, *)
-@_cdecl("apple_ai_generate_response_with_tools_stream")
-public func appleAIGenerateResponseWithToolsStream(
-    messagesJson: UnsafePointer<CChar>,
-    toolsJson: UnsafePointer<CChar>,
-    temperature: Double,
-    maxTokens: Int32,
-    onChunk: (@convention(c) (UnsafePointer<CChar>?) -> Void)
-) {
-    let messagesJsonString = String(cString: messagesJson)
-    let toolsJsonString = String(cString: toolsJson)
-
-    Task.detached {
-        do {
-            // Use shared conversation preparation logic
-            let context = try prepareConversationContext(
-                messagesJsonString: messagesJsonString,
-                temperature: temperature,
-                maxTokens: maxTokens
-            )
-
-            // Parse and setup tools
-            guard let toolsData = toolsJsonString.data(using: .utf8),
-                let rawArr = try JSONSerialization.jsonObject(with: toolsData) as? [[String: Any]]
-            else {
-                emitError("Invalid tools JSON", to: onChunk)
-                return
-            }
-
-            var tools: [any Tool] = []
-            for dict in rawArr {
-                guard let id = dict["id"] as? UInt64,
-                    let name = dict["name"] as? String
-                else { continue }
-                let description = dict["description"] as? String ?? ""
-                let paramsJson = dict["parameters"] as? [String: Any] ?? [:]
-                let (root, deps) = buildSchemasFromJson(paramsJson)
-                let gs = try GenerationSchema(root: root, dependencies: deps)
-
-                tools.append(
-                    JSProxyTool(
-                        toolID: id, name: name, description: description, parametersSchema: gs))
-            }
-
-            // Initialize coordination for early termination (default behavior)
-            await StreamingCoordinator.shared.reset(
-                expectedTools: tools.count,
-                stopAfterToolCalls: tools.count > 0  // Stop after tool calls if tools are present
-            )
-
-            // Build transcript and session
-            var entries = context.transcriptEntries
-            if !tools.isEmpty {
-                let instr = Transcript.Instructions(
-                    segments: [],
-                    toolDefinitions: tools.map { t in
-                        Transcript.ToolDefinition(
-                            name: t.name, description: t.description, parameters: t.parameters)
-                    })
-                entries.insert(.instructions(instr), at: 0)
-            }
-            let transcript = Transcript(entries: entries)
-            let session = LanguageModelSession(tools: tools, transcript: transcript)
-
-            // Reset tool call collection
-            ToolCallCollector.shared.reset()
-
-            // Streaming loop with early termination as default behavior
-            var prev = ""
-            for try await cumulative in session.streamResponse(
-                to: context.currentPrompt, options: context.options)
-            {
-                // Check if we should terminate early (default behavior when tools are used)
-                if await StreamingCoordinator.shared.shouldTerminateStream() {
-                    break  // Early termination - saves compute!
-                }
-
-                let delta = String(cumulative.dropFirst(prev.count))
-                prev = cumulative
-                guard !delta.isEmpty else { continue }
-
-                delta.withCString { cStr in
-                    onChunk(strdup(cStr))
-                }
-            }
-
-            // Signal completion
-            onChunk(nil)
-        } catch let error as ConversationError {
-            switch error {
-            case .intelligenceUnavailable(let reason):
-                emitError("Apple Intelligence not available - \(reason)", to: onChunk)
-            case .invalidJSON(let reason):
-                emitError(reason, to: onChunk)
-            case .noMessages:
-                emitError("No messages", to: onChunk)
-            }
-        } catch {
-            emitError(error.localizedDescription, to: onChunk)
-        }
-    }
-}
-
 // MARK: - Tool Call Collection for Natural Completion
 
 @available(macOS 26.0, *)
@@ -1237,4 +764,326 @@ public func appleAIToolResultCallback(_ toolID: UInt64, _ resultJson: UnsafePoin
     // In natural completion mode, we don't need to resume anything
     // This callback exists for JS compatibility but doesn't affect Swift execution
     _ = String(cString: resultJson)
+}
+
+// MARK: - Unified Generation Function
+
+@available(macOS 26.0, *)
+@_cdecl("apple_ai_generate_unified")
+public func appleAIGenerateUnified(
+    messagesJson: UnsafePointer<CChar>,
+    toolsJson: UnsafePointer<CChar>?,
+    schemaJson: UnsafePointer<CChar>?,
+    temperature: Double,
+    maxTokens: Int32,
+    stream: Bool,
+    stopAfterToolCalls: Bool,  // New parameter - controls early termination behavior
+    onChunk: (@convention(c) (UnsafePointer<CChar>?) -> Void)?
+) -> UnsafeMutablePointer<CChar>? {
+    let messagesJsonString = String(cString: messagesJson)
+    let toolsJsonString = toolsJson.map { String(cString: $0) }
+    let schemaJsonString = schemaJson.map { String(cString: $0) }
+
+    // Validate streaming parameters
+    if stream && onChunk == nil {
+        return strdup("Error: Streaming requested but no callback provided")
+    }
+
+    // For non-streaming mode, use a semaphore
+    if !stream {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: String = "Error: No response"
+
+        Task {
+            do {
+                // Parse messages and prepare context
+                let context = try prepareConversationContext(
+                    messagesJsonString: messagesJsonString,
+                    temperature: temperature,
+                    maxTokens: maxTokens
+                )
+
+                // Determine operation mode based on provided parameters
+                if let toolsStr = toolsJsonString, !toolsStr.isEmpty {
+                    // Tools mode - takes precedence over schema
+                    result = try await handleToolsMode(
+                        context: context,
+                        toolsJsonString: toolsStr,
+                        streaming: false,
+                        stopAfterToolCalls: stopAfterToolCalls,
+                        onChunk: nil
+                    )
+                } else if let schemaStr = schemaJsonString, !schemaStr.isEmpty {
+                    // Structured generation mode
+                    result = try await handleStructuredMode(
+                        context: context,
+                        schemaJsonString: schemaStr
+                    )
+                } else {
+                    // Basic generation mode
+                    result = try await handleBasicMode(context: context)
+                }
+            } catch let error as ConversationError {
+                switch error {
+                case .intelligenceUnavailable(let reason):
+                    result = "Error: Apple Intelligence not available - \(reason)"
+                case .invalidJSON(let reason):
+                    result = "Error: \(reason)"
+                case .noMessages:
+                    result = "Error: No messages provided"
+                }
+            } catch {
+                result = "Error: \(error.localizedDescription)"
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+        return strdup(result)
+    } else {
+        // Streaming mode
+        Task.detached {
+            do {
+                // Parse messages and prepare context
+                let context = try prepareConversationContext(
+                    messagesJsonString: messagesJsonString,
+                    temperature: temperature,
+                    maxTokens: maxTokens
+                )
+
+                // Determine operation mode and stream
+                if let toolsStr = toolsJsonString, !toolsStr.isEmpty {
+                    // Tools mode with streaming
+                    _ = try await handleToolsMode(
+                        context: context,
+                        toolsJsonString: toolsStr,
+                        streaming: true,
+                        stopAfterToolCalls: stopAfterToolCalls,
+                        onChunk: onChunk
+                    )
+                } else if let schemaStr = schemaJsonString, !schemaStr.isEmpty {
+                    // Structured generation doesn't support streaming
+                    emitError("Structured generation does not support streaming", to: onChunk!)
+                } else {
+                    // Basic generation with streaming
+                    try await handleBasicModeStream(
+                        context: context,
+                        onChunk: onChunk!
+                    )
+                }
+            } catch let error as ConversationError {
+                switch error {
+                case .intelligenceUnavailable(let reason):
+                    emitError("Apple Intelligence not available - \(reason)", to: onChunk!)
+                case .invalidJSON(let reason):
+                    emitError(reason, to: onChunk!)
+                case .noMessages:
+                    emitError("No messages", to: onChunk!)
+                }
+            } catch {
+                emitError(error.localizedDescription, to: onChunk!)
+            }
+        }
+        return nil  // Streaming returns immediately
+    }
+}
+
+// MARK: - Helper functions for unified generation
+
+@available(macOS 26.0, *)
+private func handleBasicMode(context: ConversationContext) async throws -> String {
+    let transcript = Transcript(entries: context.transcriptEntries)
+    let session = LanguageModelSession(transcript: transcript)
+    let response = try await session.respond(to: context.currentPrompt, options: context.options)
+
+    // Return as JSON for consistency
+    let json: [String: Any] = ["text": response.content]
+    let jsonData = try JSONSerialization.data(withJSONObject: json, options: [])
+    return String(data: jsonData, encoding: .utf8) ?? "Error: Encoding failure"
+}
+
+@available(macOS 26.0, *)
+private func handleBasicModeStream(
+    context: ConversationContext,
+    onChunk: @convention(c) (UnsafePointer<CChar>?) -> Void
+) async throws {
+    let transcript = Transcript(entries: context.transcriptEntries)
+    let session = LanguageModelSession(transcript: transcript)
+
+    var prev = ""
+    for try await cumulative in session.streamResponse(
+        to: context.currentPrompt, options: context.options)
+    {
+        let delta = String(cumulative.dropFirst(prev.count))
+        prev = cumulative
+        guard !delta.isEmpty else { continue }
+
+        delta.withCString { cStr in
+            onChunk(strdup(cStr))
+        }
+    }
+    onChunk(nil)  // Signal end of stream
+}
+
+@available(macOS 26.0, *)
+private func handleStructuredMode(
+    context: ConversationContext,
+    schemaJsonString: String
+) async throws -> String {
+    // Parse JSON Schema
+    guard let data = schemaJsonString.data(using: .utf8),
+        let jsonObj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+        throw ConversationError.invalidJSON("Invalid JSON Schema")
+    }
+
+    // Build schema from JSON
+    let (rootSchema, deps) = buildSchemasFromJson(jsonObj)
+    let generationSchema = try GenerationSchema(root: rootSchema, dependencies: deps)
+
+    // Create session without tools (structured generation doesn't use tools constructor)
+    let transcript = Transcript(entries: context.transcriptEntries)
+    let session = LanguageModelSession(transcript: transcript)
+
+    // Generate structured response
+    let response = try await session.respond(
+        to: context.currentPrompt,
+        schema: generationSchema,
+        includeSchemaInPrompt: true,
+        options: context.options
+    )
+
+    let generatedContent = response.content
+    let objectJson = generatedContentToJSON(generatedContent)
+    let textRepresentation = String(describing: generatedContent)
+
+    let json: [String: Any] = [
+        "text": textRepresentation,
+        "object": objectJson,
+    ]
+
+    let jsonData = try JSONSerialization.data(withJSONObject: json, options: [])
+    return String(data: jsonData, encoding: .utf8) ?? "Error: Encoding failure"
+}
+
+@available(macOS 26.0, *)
+private func handleToolsMode(
+    context: ConversationContext,
+    toolsJsonString: String,
+    streaming: Bool,
+    stopAfterToolCalls: Bool,  // New parameter
+    onChunk: (@convention(c) (UnsafePointer<CChar>?) -> Void)?
+) async throws -> String {
+    // Parse tools
+    guard let toolsData = toolsJsonString.data(using: .utf8),
+        let rawToolsArr = try JSONSerialization.jsonObject(with: toolsData) as? [[String: Any]]
+    else {
+        throw ConversationError.invalidJSON("Invalid tools JSON")
+    }
+
+    // Build tools
+    var tools: [any Tool] = []
+    for dict in rawToolsArr {
+        guard let idNum = dict["id"] as? UInt64,
+            let name = dict["name"] as? String
+        else { continue }
+        let description = dict["description"] as? String ?? ""
+        let paramsSchemaJson = dict["parameters"] as? [String: Any] ?? [:]
+        let (root, deps) = buildSchemasFromJson(paramsSchemaJson)
+        let genSchema = try GenerationSchema(root: root, dependencies: deps)
+        let proxy = JSProxyTool(
+            toolID: idNum, name: name, description: description, parametersSchema: genSchema
+        )
+        tools.append(proxy)
+    }
+
+    // Build transcript with tools
+    var finalEntries = context.transcriptEntries
+    if !tools.isEmpty {
+        let instructions = Transcript.Instructions(
+            segments: [],
+            toolDefinitions: tools.map { tool in
+                Transcript.ToolDefinition(
+                    name: tool.name, description: tool.description,
+                    parameters: tool.parameters)
+            })
+        finalEntries.insert(.instructions(instructions), at: 0)
+    }
+
+    let transcript = Transcript(entries: finalEntries)
+    let session = LanguageModelSession(tools: tools, transcript: transcript)
+
+    // Reset tool call collection
+    ToolCallCollector.shared.reset()
+
+    if !streaming {
+        // Non-streaming with tools
+        let response = try await session.respond(
+            to: context.currentPrompt, options: context.options
+        )
+
+        let text = response.content
+        let toolCalls = ToolCallCollector.shared.getAllCalls()
+
+        var json: [String: Any] = [:]
+
+        if !toolCalls.isEmpty {
+            let formattedCalls = toolCalls.map { call in
+                [
+                    "id": call.callId,
+                    "type": "function",
+                    "function": [
+                        "name": call.name,
+                        "arguments":
+                            (try? String(
+                                data: JSONSerialization.data(withJSONObject: call.arguments),
+                                encoding: .utf8)) ?? "{}",
+                    ],
+                ]
+            }
+            json["text"] = "(awaiting tool execution)"
+            json["toolCalls"] = formattedCalls
+        } else {
+            json["text"] = text
+        }
+
+        let jsonData = try JSONSerialization.data(withJSONObject: json, options: [])
+        return String(data: jsonData, encoding: .utf8) ?? "Error: Encoding failure"
+    } else {
+        // Streaming with tools
+        guard let onChunk = onChunk else {
+            throw ConversationError.invalidJSON("No callback provided for streaming")
+        }
+
+        // Initialize coordination with configurable early termination
+        await StreamingCoordinator.shared.reset(
+            expectedTools: tools.count,
+            stopAfterToolCalls: stopAfterToolCalls  // Use the parameter
+        )
+
+        var prev = ""
+        for try await cumulative in session.streamResponse(
+            to: context.currentPrompt, options: context.options
+        ) {
+            // Check for early termination only if enabled
+            if stopAfterToolCalls {
+                let shouldTerminate = await StreamingCoordinator.shared.shouldTerminateStream()
+                if shouldTerminate {
+                    break
+                }
+            }
+
+            let delta = String(cumulative.dropFirst(prev.count))
+            prev = cumulative
+            guard !delta.isEmpty else { continue }
+
+            delta.withCString { cStr in
+                onChunk(strdup(cStr))
+            }
+        }
+
+        // Signal completion
+        onChunk(nil)
+        return ""  // Not used in streaming mode
+    }
 }
