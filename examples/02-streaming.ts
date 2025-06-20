@@ -17,11 +17,11 @@ async function streamingExample() {
     console.log("Generating... (streaming output below)");
     console.log("---");
 
-    const result = await streamText({
+    const result = streamText({
       model: appleAIProvider("apple-on-device"),
       prompt: "Write a short story about a robot who learns to paint.",
       temperature: 0.8,
-      maxTokens: 200,
+      maxOutputTokens: 200,
     });
 
     // Stream the response
@@ -38,11 +38,11 @@ async function streamingExample() {
     console.log("Generating technical explanation... (streaming output below)");
     console.log("---");
 
-    const result2 = await streamText({
+    const result2 = streamText({
       model: appleAIProvider("apple-on-device"),
       prompt: "Explain how neural networks work, step by step.",
       temperature: 0.2, // More deterministic
-      maxTokens: 150,
+      maxOutputTokens: 150,
     });
 
     let explanationText = "";

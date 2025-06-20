@@ -17,7 +17,7 @@ async function main() {
 
   const result = streamText({
     model: appleAI("apple-on-device"),
-    stopWhen: stepCountIs(3),
+    stopWhen: stepCountIs(3), // ✅ <- THIS MUST BE SET FOR AI SDK TO MAKE A ROUNDTRIP AND PRINT THE FINAL RESPONSE
     tools: {
       weather: tool({
         description: "Get the weather in a location",

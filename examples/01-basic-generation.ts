@@ -19,7 +19,7 @@ async function basicGeneration() {
       model: appleAI("apple-on-device"),
       prompt: "What is the capital of France?",
       temperature: 0.7,
-      maxTokens: 50,
+      maxOutputTokens: 50,
     });
     console.log("Answer:", answer1);
 
@@ -29,7 +29,7 @@ async function basicGeneration() {
       model: appleAI("apple-on-device"),
       prompt: "Write a short poem about technology and nature.",
       temperature: 0.8,
-      maxTokens: 100,
+      maxOutputTokens: 100,
     });
     console.log("Poem:", story);
 
@@ -39,7 +39,7 @@ async function basicGeneration() {
       model: appleAI("apple-on-device"),
       prompt: "Explain machine learning in simple terms for a beginner.",
       temperature: 0.3,
-      maxTokens: 150,
+      maxOutputTokens: 150,
     });
     console.log("Explanation:", explanation);
 

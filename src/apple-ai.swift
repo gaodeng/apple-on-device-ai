@@ -1041,7 +1041,7 @@ private func handleToolsMode(
                     ],
                 ]
             }
-            json["text"] = "(awaiting tool execution)"
+            json["text"] = ""  // awaiting tool execution
             json["toolCalls"] = formattedCalls
         } else {
             json["text"] = text

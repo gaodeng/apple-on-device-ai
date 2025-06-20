@@ -39,7 +39,6 @@ async function main() {
       console.log(chunk);
     }
   }
-  console.log("\n(done)");
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main();

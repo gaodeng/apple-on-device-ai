@@ -15,7 +15,7 @@ import assert from "assert";
 import type { ChatMessage } from "./apple-ai";
 import {
   appleAISDK as appleAIInstance,
-  streamChatForVercelAISDK,
+  _streamChatForVercelAISDK,
   chat,
 } from "./apple-ai";
 import type { AppleAIModelId, AppleAISettings } from "./apple-ai-provider";
@@ -304,7 +304,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
     });
 
     // Use the Vercel AI SDK specific streaming function
-    const nativeStream = streamChatForVercelAISDK({
+    const nativeStream = _streamChatForVercelAISDK({
       messages: messages as ModelMessage[],
       tools: epTools,
       temperature: this.settings.temperature,

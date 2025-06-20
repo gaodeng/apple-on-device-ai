@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { generateStructuredFromZod } from "../src/apple-ai";
+import { structured } from "../src/apple-ai";
 
 async function main() {
   console.log("🧩 Zod basic structured example\n===========================");
@@ -9,7 +9,7 @@ async function main() {
     age: z.number().int().describe("Age in years"),
   });
 
-  const res = await generateStructuredFromZod({
+  const res = await structured({
     prompt: "Generate a random person as JSON.",
     schema: PersonSchema,
     temperature: 0.7,

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { generateStructuredFromZod } from "../src/apple-ai";
+import { structured } from "../src/apple-ai";
 
 async function main() {
   console.log("🎨 Zod enum / union example\n===========================");
@@ -12,7 +12,7 @@ async function main() {
     shape: Shape,
   });
 
-  const res = await generateStructuredFromZod({
+  const res = await structured({
     prompt: "Generate a random colored shape object.",
     schema: Item,
     temperature: 0.6,

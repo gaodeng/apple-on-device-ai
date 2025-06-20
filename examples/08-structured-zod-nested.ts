@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { generateStructuredFromZod } from "../src/apple-ai";
+import { structured } from "../src/apple-ai";
 
 async function main() {
   console.log(
@@ -20,7 +20,7 @@ async function main() {
     steps: z.array(z.string()),
   });
 
-  const res = await generateStructuredFromZod({
+  const res = await structured({
     prompt: "Generate a simple pancake recipe.",
     schema: Recipe,
     temperature: 0.8,

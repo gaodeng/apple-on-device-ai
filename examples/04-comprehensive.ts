@@ -37,7 +37,7 @@ async function comprehensiveExample() {
       model: appleAIProvider("apple-on-device"),
       prompt: `Provide a detailed explanation: ${userQuery}`,
       temperature: 0.5,
-      maxTokens: 200,
+      maxOutputTokens: 200,
     });
     console.log(basicResponse);
 
@@ -69,7 +69,7 @@ async function comprehensiveExample() {
       model: appleAIProvider("apple-on-device"),
       prompt: `Based on the analysis, provide a comprehensive, easy-to-understand explanation of ${analysis.topic}. Focus on practical implications and real-world examples.`,
       temperature: 0.7,
-      maxTokens: 300,
+      maxOutputTokens: 300,
     });
 
     let streamedContent = "";
@@ -91,7 +91,7 @@ async function comprehensiveExample() {
       model: appleAIProvider("apple-on-device"),
       prompt: `Based on our discussion about ${analysis.topic}, generate 3 thoughtful follow-up questions that would help someone understand the topic better.`,
       temperature: 0.6,
-      maxTokens: 150,
+      maxOutputTokens: 150,
     });
     console.log(followUp);
 

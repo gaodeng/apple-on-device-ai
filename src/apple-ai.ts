@@ -312,99 +312,6 @@ export class AppleAISDK {
     };
   }
 
-  /**
-   * Stream response as async generator yielding string chunks (deltas)
-   */
-  streamResponse(
-    prompt: string,
-    options: GenerationOptions = {}
-  ): AsyncIterableIterator<string> {
-    const queue: string[] = [];
-    let done = false;
-
-    // Pending promise controls for consumer awaiting next chunk
-    let pendingResolve: ((value: IteratorResult<string>) => void) | null = null;
-    let pendingReject: ((reason?: unknown) => void) | null = null;
-
-    let error: unknown = null;
-
-    // Push-based native callback
-    const handleChunk = (err: unknown, chunk?: string | null) => {
-      if (err) {
-        error = err;
-        done = true;
-        if (pendingReject) {
-          pendingReject(err);
-          pendingResolve = null;
-          pendingReject = null;
-        }
-        return;
-      }
-
-      if (chunk == null || chunk === "") {
-        done = true;
-        if (pendingResolve) {
-          pendingResolve({ value: undefined, done: true });
-          pendingResolve = null;
-        }
-        return;
-      }
-
-      // If the consumer is waiting, resolve immediately; otherwise buffer
-      if (pendingResolve) {
-        pendingResolve({ value: chunk!, done: false });
-        pendingResolve = null;
-      } else {
-        queue.push(chunk!);
-      }
-    };
-
-    // Convert prompt to messages and use unified streaming
-    const messages: ChatMessage[] = [{ role: "user", content: prompt }];
-    const messagesJson = JSON.stringify(messages);
-
-    unifiedBindings.generateUnifiedStream(
-      messagesJson,
-      null, // no tools
-      null, // no schema
-      options.temperature ?? undefined,
-      options.maxTokens ?? undefined,
-      true, // stopAfterToolCalls default
-      handleChunk
-    );
-
-    return {
-      next(): Promise<IteratorResult<string>> {
-        if (queue.length > 0) {
-          const value = queue.shift()!;
-          return Promise.resolve({ value, done: false });
-        }
-        if (done) {
-          return Promise.resolve({ value: undefined, done: true });
-        }
-        if (error) {
-          return Promise.reject(error);
-        }
-        // Wait for the next chunk
-        return new Promise<IteratorResult<string>>((resolve, reject) => {
-          pendingResolve = resolve;
-          pendingReject = reject;
-        });
-      },
-      async return(): Promise<IteratorResult<string>> {
-        done = true;
-        return { value: undefined, done: true };
-      },
-      async throw(err?: unknown): Promise<IteratorResult<string>> {
-        done = true;
-        throw err;
-      },
-      [Symbol.asyncIterator]() {
-        return this;
-      },
-    };
-  }
-
   /** Generate a structured object based on a Zod/JSON schema */
   async generateStructured<T = unknown>(params: {
     prompt: string;
@@ -484,14 +391,16 @@ export async function structured<T = unknown>(options: {
 }
 
 /**
+ * @deprecated Don't use this function directly. It's used internally by the Vercel AI SDK.
  * Stream chat that properly integrates with Vercel AI SDK's multi-step tool calling.
  * This function emits tool-call events and ends the stream, allowing the SDK to
  * orchestrate tool execution and restart generation with updated messages.
  *
  * Early termination is enabled by default when tools are present, saving compute
  * resources by stopping the Swift streaming loop after tool calls complete.
+ *
  */
-export function streamChatForVercelAISDK<
+export function _streamChatForVercelAISDK<
   TTools extends ReadonlyArray<EphemeralTool<JSONSchema7>>
 >(options: {
   messages: ModelMessage[];
@@ -625,7 +534,12 @@ export async function chat<T = unknown>(options: {
   schema?: z.ZodType<T> | JSONSchema7;
   temperature?: number;
   maxTokens?: number;
-  stopAfterToolCalls?: boolean; // defaults to true (OpenAI behavior)
+  /**
+   * If true, the generation will stop after the tool calls are complete.
+   * This is the default behavior for OpenAI.
+   * @default true
+   */
+  stopAfterToolCalls?: boolean;
   stream?: false;
 }): Promise<{ text: string; object?: T; toolCalls?: any[] }>;
 
@@ -635,7 +549,12 @@ export function chat<T = unknown>(options: {
   schema?: z.ZodType<T> | JSONSchema7;
   temperature?: number;
   maxTokens?: number;
-  stopAfterToolCalls?: boolean; // defaults to true (OpenAI behavior)
+  /**
+   * If true, the generation will stop after the tool calls are complete.
+   * This is the default behavior for OpenAI.
+   * @default true
+   */
+  stopAfterToolCalls?: boolean;
   stream: true;
 }): AsyncIterableIterator<string>;
 
@@ -645,7 +564,12 @@ export function chat<T = unknown>(options: {
   schema?: z.ZodType<T> | JSONSchema7;
   temperature?: number;
   maxTokens?: number;
-  stopAfterToolCalls?: boolean; // defaults to true (OpenAI behavior)
+  /**
+   * If true, the generation will stop after the tool calls are complete.
+   * This is the default behavior for OpenAI.
+   * @default true
+   */
+  stopAfterToolCalls?: boolean;
   stream?: boolean;
 }):
   | Promise<{ text: string; object?: T; toolCalls?: any[] }>
@@ -757,8 +681,6 @@ export function chat<T = unknown>(options: {
           stopAfterToolCalls
         );
 
-        // Check if the response is an error string from the native layer
-        console.log("DEBUG: Raw response from chat:", raw, typeof raw);
         if (raw && raw.startsWith("Error: ")) {
           throw new Error(raw.slice(7)); // Remove "Error: " prefix and throw
         }

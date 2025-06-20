@@ -1,12 +1,17 @@
 import { z } from "zod";
-import { chatWithEphemeralTools } from "../src/apple-ai";
+import { chat } from "../src/apple-ai";
+import zodToJsonSchema from "zod-to-json-schema";
+import type { JSONSchema7 } from "json-schema";
 
 async function main() {
   console.log(
     "🔧 Multiple native tools example\n=============================="
   );
 
-  const res = await chatWithEphemeralTools({
+  const AddArgs = z.object({ a: z.number(), b: z.number() });
+  const MultiplyArgs = z.object({ x: z.number(), y: z.number() });
+
+  const res = await chat({
     messages: [
       {
         role: "user" as const,
@@ -18,25 +23,28 @@ async function main() {
       {
         name: "add",
         description: "Adds two numbers",
-        schema: z.object({ a: z.number(), b: z.number() }),
-        handler: ({ a, b }) => {
+        jsonSchema: zodToJsonSchema(AddArgs, "jsonSchema7") as JSONSchema7,
+        handler: async (args: Record<string, unknown>) => {
+          const parsed = args as z.infer<typeof AddArgs>;
           console.log("Tool used: add");
-          return a + b;
+          return parsed.a + parsed.b;
         },
       },
       {
         name: "multiply",
         description: "Multiplies two numbers",
-        schema: z.object({ x: z.number(), y: z.number() }),
-        handler: ({ x, y }) => {
+        jsonSchema: zodToJsonSchema(MultiplyArgs, "jsonSchema7") as JSONSchema7,
+        handler: async (args: Record<string, unknown>) => {
+          const parsed = args as z.infer<typeof MultiplyArgs>;
           console.log("Tool used: multiply");
-          return x * y;
+          return parsed.x * parsed.y;
         },
       },
     ],
     temperature: 0.2,
+    stopAfterToolCalls: true,
   });
-  console.log(res);
+
   process.exit(0);
 }
 
