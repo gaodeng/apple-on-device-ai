@@ -1,15 +1,16 @@
-# [Unofficial] Apple Foundation Models bindings for NodeJS
+# [Unofficial] Apple Foundation Models bindings for Bun/NodeJS
 
-## 🔥🔥🔥 Supports [Vercel AI SDK](https://ai-sdk.dev/)
+## 🔥 Supports [Vercel AI SDK](https://ai-sdk.dev/)
 
 ## Features
 
 - 🍎 **Apple Intelligence Integration**: Direct access to Apple's on-device models
 - 🧠 **Dual API Support**: Use either the native Apple AI interface or Vercel AI SDK
 - 🌊 **Streaming Support**: Real-time response streaming with OpenAI-compatible chunks
-- 🎯 **Object Generation**: Structured data generation with Zod schemas
+- 🎯 **Object Generation**: Structured data generation with Zod schemas or JSON Schema
 - 💬 **Chat Interface**: OpenAI-style chat completions with message history
-- 🔄 **Cross-Platform**: Works with React, Next.js, Vue, Svelte, and Node.js
+- 🔧 **Tool Calling**: Function/tool calling with Zod or JSON Schema
+- 🔄 **Cross-Platform**: Works with React, Next.js, Vue, Svelte, and Node.js (Apple Silicon)
 - 📝 **TypeScript**: Full type safety and excellent DX
 
 ## Installation
@@ -18,7 +19,7 @@
 # Using bun (recommended)
 bun add @meridius-labs/apple-on-device-ai
 
-# Assumming you don't have these
+# If you don't have these already
 bun add ai zod
 ```
 
@@ -27,53 +28,103 @@ bun add ai zod
 ### Native Apple AI Interface
 
 ```typescript
-import { appleAISDK } from "@meridius-labs/apple-on-device-ai";
+import { chat, appleAISDK } from "@meridius-labs/apple-on-device-ai";
 
-// (non streaming) Simple text generation
-const response = await appleAISDK.generateResponse(
-  "What is the capital of France?",
-  { temperature: 0.7, maxTokens: 100 }
-);
+// Simple text generation
+const response = await chat({ messages: "What is the capital of France?" });
+console.log(response.text); // "Paris is the capital of France."
 
-// (non streaming) Chat with message history
-const chatResponse = await appleAISDK.generateResponseWithHistory([
-  { role: "system", content: "You are a helpful assistant." },
-  { role: "user", content: "Hello!" },
-]);
+// Chat with message history
+const chatResponse = await chat({
+  messages: [
+    { role: "system", content: "You are a helpful assistant." },
+    { role: "user", content: "Hello!" },
+  ],
+});
+console.log(chatResponse.text);
 
 // Streaming responses
-for await (const chunk of appleAISDK.streamResponse("Tell me a story")) {
+for await (const chunk of chat({ messages: "Tell me a story", stream: true })) {
   process.stdout.write(chunk);
 }
+
+// Structured object generation (Zod)
+import { z } from "zod";
+const UserSchema = z.object({
+  name: z.string(),
+  age: z.number(),
+});
+const structured = await chat({
+  messages: "Generate a user object",
+  schema: UserSchema,
+});
+console.log(structured.object); // { name: "Alice", age: 30 }
+
+// Tool calling
+const mathTool = {
+  name: "calculator",
+  description: "Performs basic math operations",
+  jsonSchema: {
+    type: "object",
+    properties: {
+      operation: {
+        type: "string",
+        enum: ["add", "subtract", "multiply", "divide"],
+      },
+      a: { type: "number" },
+      b: { type: "number" },
+    },
+    required: ["operation", "a", "b"],
+  },
+  handler: async ({ operation, a, b }) => {
+    switch (operation) {
+      case "add":
+        return { result: a + b };
+      case "subtract":
+        return { result: a - b };
+      case "multiply":
+        return { result: a * b };
+      case "divide":
+        return { result: a / b };
+    }
+  },
+};
+const withTools = await chat({
+  messages: "What is 25 times 4?",
+  tools: [mathTool],
+});
+console.log(withTools.toolCalls); // [{ function: { name: "calculator" }, ... }]
 ```
 
-### <img width="24" height="24" src="https://vercel.com/favicon.ico" /> Vercel AI SDK Integration
+### Vercel AI SDK Integration
 
 ```typescript
+import { createAppleAI } from "@meridius-labs/apple-on-device-ai";
 import { generateText, streamText, generateObject } from "ai";
-import { appleAI } from "@meridius-labs/apple-on-device-ai";
 import { z } from "zod";
 
-// Text generation with AI SDK
+const ai = createAppleAI();
+
+// Text generation
 const { text } = await generateText({
-  model: appleAI("apple-on-device"),
-  prompt: "Explain quantum computing",
-  temperature: 0.7,
+  model: ai("apple-on-device"),
+  messages: [{ role: "user", content: "Explain quantum computing" }],
 });
+console.log(text);
 
-// Streaming with AI SDK
-const result = streamText({
-  model: appleAI("apple-on-device"),
-  prompt: "Write a poem about technology",
+// Streaming
+const { textStream } = await streamText({
+  model: ai("apple-on-device"),
+  messages: [{ role: "user", content: "Write a poem about technology" }],
 });
-
-for await (const delta of result.textStream) {
+for await (const delta of textStream) {
   process.stdout.write(delta);
 }
 
 // Structured object generation
 const { object } = await generateObject({
-  model: appleAI("apple-on-device"),
+  model: ai("apple-on-device"),
+  prompt: "Generate a chocolate chip cookie recipe",
   schema: z.object({
     recipe: z.object({
       name: z.string(),
@@ -81,131 +132,87 @@ const { object } = await generateObject({
       steps: z.array(z.string()),
     }),
   }),
-  prompt: "Generate a chocolate chip cookie recipe",
 });
-```
+console.log(object);
 
-## React/Next.js Integration
-
-```tsx
-import { useChat } from "ai/react";
-import { appleAI } from "@meridius-labs/apple-on-device-ai";
-
-export default function ChatInterface() {
-  const { messages, input, handleInputChange, handleSubmit } = useChat({
-    api: "/api/chat", // Your API endpoint using appleAI
-  });
-
-  return (
-    <div>
-      {messages.map((m) => (
-        <div key={m.id}>
-          <strong>{m.role}:</strong> {m.content}
-        </div>
-      ))}
-
-      <form onSubmit={handleSubmit}>
-        <input value={input} onChange={handleInputChange} />
-        <button type="submit">Send</button>
-      </form>
-    </div>
-  );
-}
-```
-
-```typescript
-// app/api/chat/route.ts
-import { appleAI } from "@meridius-labs/apple-on-device-ai";
-import { streamText } from "ai";
-
-export async function POST(req: Request) {
-  const { messages } = await req.json();
-
-  const result = streamText({
-    model: appleAI("apple-on-device"),
-    messages,
-  });
-
-  return result.toDataStreamResponse();
-}
+// Tool calling
+const { text, toolCalls } = await generateText({
+  model: ai("apple-on-device"),
+  messages: [{ role: "user", content: "What's the weather in Tokyo?" }],
+  tools: {
+    weather: {
+      description: "Get weather information",
+      parameters: z.object({ location: z.string() }),
+      execute: async ({ location }) => ({
+        temperature: 72,
+        condition: "sunny",
+        location,
+      }),
+    },
+  },
+});
+console.log(toolCalls);
 ```
 
 ## Requirements
 
 - **macOS 26+** with Apple Intelligence enabled
-- **Compatible Apple Silicon**: M1, M2, M3, or M4 chips
+- **Apple Silicon**: M1, M2, M3, or M4 chips
 - **Device Language**: Set to supported language (English, Spanish, French, etc.)
 - **Sufficient Storage**: At least 4GB available space for model files
+- **Bun**: Use Bun for best compatibility (see workspace rules)
 
 ## API Reference
 
-### Core Methods for `appleAISDK`
+### Native API
 
-#### `generateResponse(prompt, options?)`
+#### `chat({ messages, schema?, tools?, stream?, ...options })`
 
-Generate a simple text response.
+- `messages`: string or array of chat messages (`{ role, content }`)
+- `schema`: Zod schema or JSON Schema for structured/object output (optional)
+- `tools`: Array of tool definitions (see above) (optional)
+- `stream`: boolean for streaming output (optional)
+- `temperature`, `maxTokens`, etc.: generation options (optional)
+- Returns: `{ text, object?, toolCalls? }` or async iterator for streaming
 
-#### `generateResponseWithHistory(messages, options?)`
-
-Generate response with conversation context.
-
-#### `streamResponse(prompt, options?)`
-
-Stream response chunks in real-time.
-
-#### `createChatCompletion(params)`
-
-OpenAI-style chat completions with optional streaming.
-
-#### `checkAvailability()`
+#### `appleAISDK.checkAvailability()`
 
 Check if Apple Intelligence is available.
 
-#### `getSupportedLanguages()`
+#### `appleAISDK.getSupportedLanguages()`
 
 Get list of supported languages.
 
 ### Vercel AI SDK Provider
 
-The library includes a full Vercel AI SDK provider:
+#### `createAppleAI(options?)`
 
-```typescript
-import { appleAI, createAppleAI } from "@meridius-labs/apple-on-device-ai";
+Returns a model provider for use with Vercel AI SDK (`generateText`, `streamText`, `generateObject`).
 
-// Use default provider
-const model = appleAI("apple-on-device");
+#### `generateText({ model, messages, tools?, ... })`
 
-// Create custom provider
-const customProvider = createAppleAI({
-  headers: { "Custom-Header": "value" },
-});
-```
+Text generation with optional tool calling.
 
-### Options
+#### `streamText({ model, messages, tools?, ... })`
 
-```typescript
-interface GenerationOptions {
-  temperature?: number; // 0.0 to 1.0 (default: 0.7)
-  maxTokens?: number; // Maximum tokens to generate
-}
+Streaming text generation with optional tool calling.
 
-interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-  name?: string;
-}
-```
+#### `generateObject({ model, prompt, schema })`
+
+Structured/object generation.
 
 ## Examples
 
-See the `/examples` directory for complete implementations:
+See the `/examples` directory for comprehensive tests and usage:
 
-- Basic text generation
-- Streaming responses
-- Chat interfaces
-- Object generation
-- Next.js integration
-- React components
+- `15-smoke-test.ts`: Native API, tool calling, streaming, structured output
+- `16-smoke-test.ts`: Vercel AI SDK compatibility, tool calling, streaming, object generation
+
+## Error Handling
+
+- All methods throw on fatal errors (e.g., invalid schema, unavailable model)
+- Streaming can be aborted with an `AbortController` (see Vercel AI SDK example)
+- Tool handler errors are surfaced in the result
 
 ## Contributing
 
