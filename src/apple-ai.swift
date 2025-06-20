@@ -744,13 +744,13 @@ private actor StreamingCoordinator {
 
     func toolCompleted() {
         completedToolCount += 1
-        if completedToolCount >= expectedToolCount {
-            allToolsCompleted = true
-        }
+        // Mark completion on any tool call so we can stop immediately if configured
+        allToolsCompleted = true
     }
 
     func shouldTerminateStream() -> Bool {
-        return shouldStopAfterTools && allToolsCompleted
+        // Stop streaming as soon as at least one tool has been invoked when requested
+        return shouldStopAfterTools && completedToolCount > 0
     }
 
     func hasToolsToExecute() -> Bool {

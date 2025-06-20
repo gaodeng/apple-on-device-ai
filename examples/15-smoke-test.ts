@@ -242,10 +242,14 @@ async function runSmokeTest() {
   };
 
   const multiTools = await chat({
-    messages: "What's 5 times 6 and what's the weather in Paris?",
+    messages:
+      "Tell me what's 5 times 6 and what's the weather in Paris? (use tools provided!)",
     tools: [mathTool, weatherTool],
   });
-  assert(multiTools.toolCalls !== undefined, "Should support multiple tools");
+  assert(
+    (multiTools.toolCalls?.length ?? 0) > 1,
+    "Should be able to call multiple tools"
+  );
 
   // Test 12: Error handling - invalid schema
   console.log("\n📝 Test 12: Error Handling");
