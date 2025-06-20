@@ -9,10 +9,11 @@ import {
 import { z } from "zod";
 import { appleAI } from "../src/apple-ai-provider";
 
-const messages: ModelMessage[] = [];
-
 async function main() {
-  let toolResponseAvailable = false;
+  console.log("🚀 Apple Intelligence with Vercel AI SDK");
+  console.log(
+    "Demonstrating native early termination (default behavior with tools)\n"
+  );
 
   const result = streamText({
     model: appleAI("apple-on-device"),
@@ -30,8 +31,22 @@ async function main() {
           });
         },
       }),
+      calculator: tool({
+        description: "Perform mathematical calculations",
+        inputSchema: z.object({
+          expression: z
+            .string()
+            .describe("Mathematical expression to evaluate"),
+        }),
+        execute: async ({ expression }) => {
+          // Simple evaluation for demo purposes
+          const result = eval(expression);
+          return { expression, result };
+        },
+      }),
     },
-    prompt: "What is the weather in San Francisco and Tokyo?",
+    prompt:
+      "What's the weather in San Francisco and Tokyo? Also calculate 25 * 4.",
     maxOutputTokens: 1000,
   });
 
@@ -49,44 +64,46 @@ async function main() {
 
       case "tool-call": {
         toolCalls.push(delta);
-
-        console.log(
-          `\nTool call: '${delta.toolName}' ${JSON.stringify(delta.input)}`
-        );
+        console.log(`\n🔧 Tool call: ${delta.toolName}`);
+        console.log(`   Arguments: ${JSON.stringify(delta.input)}`);
         break;
       }
 
       case "tool-result": {
-        // Transform to new format
         const transformedDelta: ToolResultPart = {
           ...delta,
           output: { type: "json", value: delta.output },
         };
         toolResponses.push(transformedDelta);
 
-        console.log(
-          `\nTool response: '${delta.toolName}' ${JSON.stringify(delta.output)}`
-        );
+        console.log(`✅ Tool result: ${JSON.stringify(delta.output)}`);
         break;
       }
+
       case "start-step": {
-        console.log("[start-step]", delta);
+        console.log(`\n📝 Processing step...`);
         break;
       }
     }
   }
-  process.stdout.write("\n\n");
 
-  messages.push({
-    role: "assistant",
-    content: [{ type: "text", text: fullResponse }, ...toolCalls],
-  });
+  console.log(`\n\n📊 Summary:`);
+  console.log(`   • Tool calls made: ${toolCalls.length}`);
+  console.log(`   • Final response: ${fullResponse.length} characters`);
+  console.log(
+    `   • Early termination: ${
+      toolCalls.length > 0 ? "✅ Active (default)" : "❌ No tools called"
+    }`
+  );
 
-  if (toolResponses.length > 0) {
-    messages.push({ role: "tool", content: toolResponses });
+  if (toolCalls.length > 0) {
+    console.log(
+      `\n💡 Apple Intelligence automatically terminates after tool execution,`
+    );
+    console.log(
+      `   optimizing compute usage by default when tools are present.`
+    );
   }
-
-  toolResponseAvailable = toolCalls.length > 0;
 }
 
 main().catch(console.error);

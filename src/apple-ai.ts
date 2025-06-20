@@ -834,6 +834,9 @@ export function streamChatWithExternalTools<
  * Stream chat that properly integrates with Vercel AI SDK's multi-step tool calling.
  * This function emits tool-call events and ends the stream, allowing the SDK to
  * orchestrate tool execution and restart generation with updated messages.
+ *
+ * Early termination is enabled by default when tools are present, saving compute
+ * resources by stopping the Swift streaming loop after tool calls complete.
  */
 export function streamChatForVercelAISDK<
   TTools extends ReadonlyArray<EphemeralTool<JSONSchema7>>
@@ -867,7 +870,7 @@ export function streamChatForVercelAISDK<
 
   const readable = new Readable({ read() {}, objectMode: true });
 
-  // Set up tool callback to collect tool calls (don't end stream)
+  // Set up tool callback to collect tool calls
   toolBindings.setToolCallback(async (err, id, argsJson) => {
     if (err) {
       // Always provide a result to avoid hanging
@@ -904,43 +907,45 @@ export function streamChatForVercelAISDK<
   const schemasJson = JSON.stringify(toolSchemas);
 
   let generationComplete = false;
-  let fullContent = "";
 
+  // Helper to emit tool calls and close stream
+  const finishWithToolCalls = () => {
+    if (generationComplete) return;
+    generationComplete = true;
+
+    // Emit all collected tool calls
+    for (const call of collectedToolCalls) {
+      readable.push({
+        type: "tool-call",
+        toolCallId: `tool-call-${crypto.randomUUID()}`,
+        toolName: call.toolName,
+        args: call.args,
+      });
+    }
+
+    readable.push(null);
+    toolBindings.clearToolCallback?.();
+  };
+
+  // Use the standard streaming function (early termination is now default)
   toolBindings.generateResponseWithToolsStream(
     messagesJson,
     schemasJson,
     options.temperature ?? undefined,
-    undefined,
+    undefined, // maxTokens
     (err, chunk) => {
       if (err) {
         readable.destroy(err as Error);
         toolBindings.clearToolCallback?.();
         return;
       }
+
       if (chunk === null || chunk === "") {
-        // Generation completed - process results
-        generationComplete = true;
-        toolBindings.clearToolCallback?.();
-
-        // Check if any tool calls were collected
-        if (collectedToolCalls.length > 0) {
-          // Emit tool calls and end stream (OpenAI-style behavior)
-          for (const call of collectedToolCalls) {
-            readable.push({
-              type: "tool-call",
-              toolCallId: `tool-call-${crypto.randomUUID()}`,
-              toolName: call.toolName,
-              args: call.args,
-            });
-          }
-        }
-
-        readable.push(null);
+        finishWithToolCalls();
         return;
       }
 
-      // Stream content immediately - this provides real-time streaming
-      fullContent += chunk;
+      // Stream text content
       readable.push({ type: "text", text: chunk });
     }
   );

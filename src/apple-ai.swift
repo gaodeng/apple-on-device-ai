@@ -591,6 +591,9 @@ private struct JSProxyTool: Tool {
             ToolCallCollector.shared.append(id: toolID, name: name, arguments: [:])
         }
 
+        // Signal completion to streaming coordinator for early termination
+        await StreamingCoordinator.shared.toolCompleted()
+
         // Return placeholder output to allow generation to continue naturally
         return ToolOutput("Tool call executed")
     }
@@ -1070,7 +1073,7 @@ public func appleAIGenerateResponseWithToolsStream(
     maxTokens: Int32,
     onChunk: (@convention(c) (UnsafePointer<CChar>?) -> Void)
 ) {
-    let messagesJsonString = String(cString: messagesJson)  // Convert C strings to Swift Strings
+    let messagesJsonString = String(cString: messagesJson)
     let toolsJsonString = String(cString: toolsJson)
 
     Task.detached {
@@ -1082,35 +1085,38 @@ public func appleAIGenerateResponseWithToolsStream(
                 maxTokens: maxTokens
             )
 
-            // 3. ----- Tool Definitions -----------------------------------------------------
-            // Deserialize tool definitions that the assistant may invoke.
+            // Parse and setup tools
             guard let toolsData = toolsJsonString.data(using: .utf8),
                 let rawArr = try JSONSerialization.jsonObject(with: toolsData) as? [[String: Any]]
             else {
                 emitError("Invalid tools JSON", to: onChunk)
                 return
             }
+
             var tools: [any Tool] = []
             for dict in rawArr {
-                // Each element must contain at least an `id` and a `name`.
                 guard let id = dict["id"] as? UInt64,
                     let name = dict["name"] as? String
                 else { continue }
                 let description = dict["description"] as? String ?? ""
                 let paramsJson = dict["parameters"] as? [String: Any] ?? [:]
-                // Convert JSON Schema → GenerationSchema so the model understands the arguments.
                 let (root, deps) = buildSchemasFromJson(paramsJson)
                 let gs = try GenerationSchema(root: root, dependencies: deps)
-                // Wrap each tool with a JS proxy that delegates execution back to JavaScript.
+
                 tools.append(
                     JSProxyTool(
                         toolID: id, name: name, description: description, parametersSchema: gs))
             }
 
-            // 4. ----- Build Transcript & Session -------------------------------------------
+            // Initialize coordination for early termination (default behavior)
+            await StreamingCoordinator.shared.reset(
+                expectedTools: tools.count,
+                stopAfterToolCalls: tools.count > 0  // Stop after tool calls if tools are present
+            )
+
+            // Build transcript and session
             var entries = context.transcriptEntries
             if !tools.isEmpty {
-                // Prepend an instruction containing the available tool signatures.
                 let instr = Transcript.Instructions(
                     segments: [],
                     toolDefinitions: tools.map { t in
@@ -1122,21 +1128,25 @@ public func appleAIGenerateResponseWithToolsStream(
             let transcript = Transcript(entries: entries)
             let session = LanguageModelSession(tools: tools, transcript: transcript)
 
-            // 5. ----- Streaming Loop -------------------------------------------------------
-            // Reset tool call collection for streaming
+            // Reset tool call collection
             ToolCallCollector.shared.reset()
 
-            var prev = ""  // cumulative text we have seen so far
+            // Streaming loop with early termination as default behavior
+            var prev = ""
             for try await cumulative in session.streamResponse(
                 to: context.currentPrompt, options: context.options)
             {
-                // Compute the incremental delta (only send what is new)
+                // Check if we should terminate early (default behavior when tools are used)
+                if await StreamingCoordinator.shared.shouldTerminateStream() {
+                    break  // Early termination - saves compute!
+                }
+
                 let delta = String(cumulative.dropFirst(prev.count))
                 prev = cumulative
                 guard !delta.isEmpty else { continue }
 
                 delta.withCString { cStr in
-                    onChunk(strdup(cStr))  // pass ownership of the strdup'ed buffer to caller
+                    onChunk(strdup(cStr))
                 }
             }
 
@@ -1184,6 +1194,40 @@ private class ToolCallCollector {
 
     func getAllCalls() -> [ToolCallRecord] {
         queue.sync { calls }
+    }
+}
+
+// MARK: - Streaming Coordinator for Early Termination
+
+@available(macOS 26.0, *)
+private actor StreamingCoordinator {
+    static let shared = StreamingCoordinator()
+
+    private var expectedToolCount: Int = 0
+    private var completedToolCount: Int = 0
+    private var shouldStopAfterTools: Bool = false
+    private var allToolsCompleted: Bool = false
+
+    func reset(expectedTools: Int, stopAfterToolCalls: Bool) {
+        expectedToolCount = expectedTools
+        completedToolCount = 0
+        shouldStopAfterTools = stopAfterToolCalls
+        allToolsCompleted = false
+    }
+
+    func toolCompleted() {
+        completedToolCount += 1
+        if completedToolCount >= expectedToolCount {
+            allToolsCompleted = true
+        }
+    }
+
+    func shouldTerminateStream() -> Bool {
+        return shouldStopAfterTools && allToolsCompleted
+    }
+
+    func hasToolsToExecute() -> Bool {
+        return expectedToolCount > 0
     }
 }
 

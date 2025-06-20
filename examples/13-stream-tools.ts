@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { chatWithEphemeralTools } from "../src/apple-ai";
+import { streamChatWithEphemeralTools } from "../src/apple-ai";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { JSONSchema7 } from "json-schema";
 
@@ -8,7 +8,7 @@ async function main() {
     "🔄 Streaming with tools example\n==============================="
   );
 
-  const iterator = chatWithEphemeralTools({
+  const iterator = streamChatWithEphemeralTools({
     messages: [
       {
         role: "user" as const,
