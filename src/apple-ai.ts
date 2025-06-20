@@ -1,7 +1,9 @@
 import { getNativeModule } from "./native-loader";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import type { CoreMessage } from "ai";
+import type { CoreMessage, ModelMessage } from "ai";
+import type { JSONSchema7 } from "json-schema";
+import { Readable } from "stream";
 
 // Lightweight opt-in logger: set APPLE_AI_DEBUG=1 to enable
 function debug(...args: unknown[]) {
@@ -36,18 +38,36 @@ const toolBindings = {
   ) => void,
 };
 
+// ------------------ Shared Types ------------------
+
+/**
+ * Definition of an in-memory ("ephemeral") tool that can be exposed to the
+ * on-device model during a single request.
+ *
+ *  • `schema` captures the expected argument structure using Zod.
+ *  • `handler` is invoked with the validated, _typed_ argument object.
+ *
+ * By making the interface generic in `TSchema` (and, optionally, `TResult`) we
+ * propagate rich typings to call-sites instead of falling back to `unknown`.
+ */
+export type EphemeralTool<TSchema extends JSONSchema7, TResult = unknown> = {
+  /** Unique, model-visible name */
+  name: string;
+  /** Optional human-oriented description */
+  description?: string;
+  /** JSON schema describing the tool arguments */
+  jsonSchema: TSchema;
+  /** Implementation invoked with a fully-parsed, type-safe argument object */
+  handler: (args: Record<string, unknown>) => PromiseLike<TResult>;
+};
+
 // ---------- Ephemeral tool invocation ----------
 
-export async function chatWithEphemeralTools(options: {
-  messages: CoreMessage[];
-  tools?:
-    | Array<{
-        name: string;
-        description?: string;
-        schema: z.ZodType<unknown>;
-        handler: (args: unknown) => unknown | Promise<unknown>;
-      }>
-    | Record<string, any>;
+export async function chatWithEphemeralTools<
+  TTools extends ReadonlyArray<EphemeralTool<any, any>>
+>(options: {
+  messages: ModelMessage[];
+  tools?: TTools;
   temperature?: number;
   stream?: boolean;
 }): Promise<{ content?: string; error?: string; toolCalls?: any[] }> {
@@ -63,45 +83,23 @@ export async function chatWithEphemeralTools(options: {
 
   try {
     // 1. Setup tools if provided
-    if (
-      (Array.isArray(tools) && tools.length > 0) ||
-      (!Array.isArray(tools) && Object.keys(tools).length > 0)
-    ) {
+    if (Array.isArray(tools) && tools.length > 0) {
       let toolId = 1;
 
-      if (Array.isArray(tools)) {
-        // Handle array format: [{ name, schema, handler }]
-        for (const tool of tools) {
-          const jsonSchema = {
-            id: toolId,
-            name: tool.name,
-            description: tool.description || "",
-            parameters: zodToJsonSchema(tool.schema),
-          };
+      // Handle array format: [{ name, schema, handler }]
+      for (const tool of tools) {
+        const jsonSchema = {
+          id: toolId,
+          name: tool.name,
+          description: tool.description || "",
+          parameters: tool.jsonSchema,
+        };
 
-          toolMap.set(toolId, {
-            tool: { execute: tool.handler },
-            schema: jsonSchema,
-          });
-          toolId++;
-        }
-      } else {
-        // Handle object format: { name: { parameters, execute } }
-        for (const [name, tool] of Object.entries(tools)) {
-          const jsonSchema = {
-            id: toolId,
-            name: name,
-            description: "",
-            parameters: tool.parameters
-              ? tool.parameters instanceof z.ZodSchema
-                ? zodToJsonSchema(tool.parameters)
-                : tool.parameters
-              : { type: "object", properties: {} },
-          };
-
-          toolMap.set(toolId, { tool, schema: jsonSchema });
-          toolId++;
-        }
+        toolMap.set(toolId, {
+          tool: { execute: tool.handler },
+          schema: jsonSchema,
+        });
+        toolId++;
       }
     }
 
@@ -113,6 +111,7 @@ export async function chatWithEphemeralTools(options: {
             debugErr("Tool callback error:", err);
             return;
           }
+
           debug(
             "Callback received - toolId:",
             toolId,
@@ -120,6 +119,7 @@ export async function chatWithEphemeralTools(options: {
             "argsJson:",
             argsJson
           );
+
           const tool = toolMap.get(toolId)?.tool;
           if (!tool) {
             debug(
@@ -146,7 +146,7 @@ export async function chatWithEphemeralTools(options: {
 
     // Log what we're sending to Swift
     const toolSchemas = Array.from(toolMap.values()).map((t) => t.schema);
-    debug("Sending tools to Swift", JSON.stringify(toolSchemas));
+    debug("Sending tools to Swift");
 
     // 2. Generate response
     if (stream) {
@@ -190,9 +190,19 @@ export async function chatWithEphemeralTools(options: {
 
 // Types for our Apple AI library
 export interface ChatMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool" | "tool_calls";
   content: string;
   name?: string;
+  tool_call_id?: string; // OpenAI-compatible snake_case
+  tool_calls?: Array<{
+    // OpenAI-compatible structure for assistant messages
+    id: string;
+    type: "function";
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }>;
 }
 
 export interface GenerationOptions {
@@ -614,106 +624,334 @@ export async function generateStructuredFromZod<T = unknown>(params: {
   });
 }
 
-export function streamChatWithEphemeralTools(options: {
-  messages: CoreMessage[];
-  tools: Array<{
-    name: string;
-    description?: string;
-    schema: z.ZodType<unknown>;
-    handler: (args: unknown) => unknown | Promise<unknown>;
-  }>;
+export function streamChatWithEphemeralTools<
+  TTools extends ReadonlyArray<EphemeralTool<JSONSchema7>>
+>(options: {
+  messages: ModelMessage[];
+  tools: TTools;
   temperature?: number;
 }): AsyncIterableIterator<string> {
-  let toolId = 1;
-  const toolMap = new Map<
-    number,
-    {
-      tool: { execute: (args: unknown) => unknown | Promise<unknown> };
-      schema: unknown;
-    }
-  >();
+  // Build mapping → schema in one pass
+  const toolMap = new Map<number, EphemeralTool<JSONSchema7>>();
+  const toolSchemas = options.tools.map((tool, idx) => {
+    const id = idx + 1;
+    toolMap.set(id, tool);
+    return {
+      id,
+      name: tool.name,
+      description: tool.description ?? "",
+      parameters: tool.jsonSchema,
+    };
+  });
 
-  for (const tool of options.tools) {
-    toolMap.set(toolId, {
-      tool: { execute: tool.handler },
-      schema: {
-        id: toolId,
-        name: tool.name,
-        description: tool.description || "",
-        parameters: zodToJsonSchema(tool.schema),
-      },
-    });
-    toolId++;
-  }
-
-  // Register global callback
-  toolBindings.setToolCallback((err, id, argsJson) => {
+  // Global callback that invokes the correct handler and returns result back to Swift
+  toolBindings.setToolCallback(async (err, id, argsJson) => {
     if (err) return;
-    const entry = toolMap.get(id);
-    if (!entry) {
+    const tool = toolMap.get(id);
+    if (!tool) {
       toolBindings.toolResult(id, "{}");
       return;
     }
-    Promise.resolve()
-      .then(() => entry.tool.execute(JSON.parse(argsJson)))
-      .then((res) => toolBindings.toolResult(id, JSON.stringify(res ?? null)))
-      .catch(() => toolBindings.toolResult(id, "{}"));
+    try {
+      const result = await tool.handler(JSON.parse(argsJson));
+      toolBindings.toolResult(id, JSON.stringify(result ?? null));
+    } catch {
+      toolBindings.toolResult(id, "{}");
+    }
   });
 
-  const schemas = JSON.stringify(
-    Array.from(toolMap.values()).map((v) => v.schema)
-  );
+  const messagesJson = JSON.stringify(options.messages);
+  const schemasJson = JSON.stringify(toolSchemas);
 
-  const queue: string[] = [];
-  let done = false;
-  let error: unknown = null;
-  let pendingResolve: ((value: IteratorResult<string>) => void) | null = null;
+  // Use a Node/Bun Readable stream (object-mode) to bridge callback → async
+  // iterator in the most compact form.
+  const readable = new Readable({ read() {}, objectMode: true });
+
+  // Clear callback only after native layer tells us the stream is finished.
+  const clear = () => toolBindings.clearToolCallback?.();
 
   toolBindings.generateResponseWithToolsStream(
-    JSON.stringify(options.messages),
-    schemas,
+    messagesJson,
+    schemasJson,
     options.temperature ?? undefined,
     undefined,
     (err, chunk) => {
       if (err) {
-        error = err;
-        done = true;
-        if (pendingResolve) pendingResolve({ value: undefined, done: true });
+        readable.destroy(err as Error);
+        clear();
         return;
       }
       if (chunk === null || chunk === "") {
-        done = true;
-        if (pendingResolve) pendingResolve({ value: undefined, done: true });
-        toolBindings.clearToolCallback?.();
+        readable.push(null); // EOS
+        clear();
         return;
       }
-      if (pendingResolve) {
-        pendingResolve({ value: chunk!, done: false });
-        pendingResolve = null;
-      } else {
-        queue.push(chunk!);
-      }
+      readable.push(chunk);
     }
   );
 
-  return {
-    next(): Promise<IteratorResult<string>> {
-      if (queue.length)
-        return Promise.resolve({ value: queue.shift()!, done: false });
-      if (done) return Promise.resolve({ value: undefined, done: true });
-      if (error) return Promise.reject(error);
-      return new Promise((resolve) => (pendingResolve = resolve));
-    },
-    async return() {
-      toolBindings.clearToolCallback?.();
-      return { value: undefined, done: true };
-    },
-    async throw(e: unknown) {
-      toolBindings.clearToolCallback?.();
-      throw e;
-    },
-    [Symbol.asyncIterator]() {
-      return this;
-    },
+  // Expose the stream as an async iterator of strings
+  return readable[Symbol.asyncIterator]() as AsyncIterableIterator<string>;
+}
+
+/**
+ * Stream chat with external tool orchestration - emits tool-call events
+ * and accepts tool results to be injected back into the stream.
+ */
+export function streamChatWithExternalTools<
+  TTools extends ReadonlyArray<EphemeralTool<JSONSchema7>>
+>(options: {
+  messages: ModelMessage[];
+  tools: TTools;
+  temperature?: number;
+}): {
+  textStream: AsyncIterableIterator<
+    | { type: "text"; text: string }
+    | {
+        type: "tool-call";
+        toolCallId: string;
+        toolName: string;
+        args: Record<string, unknown>;
+      }
+  >;
+  injectToolResult: (toolCallId: string, result: unknown) => void;
+} {
+  // Build tool schemas for the native layer
+  const toolSchemas = options.tools.map((tool, idx) => ({
+    id: idx + 1,
+    name: tool.name,
+    description: tool.description ?? "",
+    parameters: tool.jsonSchema,
+  }));
+
+  // Map to track pending tool calls and their resolve functions
+  const pendingToolCalls = new Map<
+    string,
+    {
+      toolId: number;
+      resolve: (result: unknown) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+
+  // Set up tool callback to emit tool-call events and wait for external results
+  toolBindings.setToolCallback(async (err, id, argsJson) => {
+    if (err) {
+      // Resume Swift continuation to avoid leaks, even if an error occurred
+      toolBindings.toolResult(id, "{}");
+      return;
+    }
+
+    const tool = options.tools[id - 1]; // toolIds are 1-based
+    if (!tool) {
+      toolBindings.toolResult(id, "{}");
+      return;
+    }
+
+    const toolCallId = `tool-call-${crypto.randomUUID()}`;
+
+    try {
+      const args = JSON.parse(argsJson);
+
+      // Create a promise that will be resolved by external tool result injection
+      const toolExecutionPromise = new Promise<unknown>((resolve, reject) => {
+        pendingToolCalls.set(toolCallId, {
+          toolId: id,
+          resolve,
+          reject,
+        });
+
+        // Emit the tool-call event to the stream
+        readable.push({
+          type: "tool-call",
+          toolCallId,
+          toolName: tool.name,
+          args,
+        });
+      });
+
+      // Wait for external execution to complete
+      const result = await toolExecutionPromise;
+      toolBindings.toolResult(id, JSON.stringify(result ?? null));
+    } catch (error) {
+      toolBindings.toolResult(id, JSON.stringify({ error: String(error) }));
+    }
+  });
+
+  const messagesJson = JSON.stringify(options.messages);
+  const schemasJson = JSON.stringify(toolSchemas);
+
+  const readable = new Readable({ read() {}, objectMode: true });
+
+  const clear = () => toolBindings.clearToolCallback?.();
+
+  toolBindings.generateResponseWithToolsStream(
+    messagesJson,
+    schemasJson,
+    options.temperature ?? undefined,
+    undefined,
+    (err, chunk) => {
+      if (err) {
+        readable.destroy(err as Error);
+        clear();
+        return;
+      }
+      if (chunk === null || chunk === "") {
+        readable.push(null); // EOS
+        clear();
+        return;
+      }
+      readable.push({ type: "text", text: chunk });
+    }
+  );
+
+  const textStream = readable[Symbol.asyncIterator]() as AsyncIterableIterator<
+    | { type: "text"; text: string }
+    | {
+        type: "tool-call";
+        toolCallId: string;
+        toolName: string;
+        args: Record<string, unknown>;
+      }
+  >;
+
+  // Function to inject tool results from external execution
+  const injectToolResult = (toolCallId: string, result: unknown) => {
+    const pendingCall = pendingToolCalls.get(toolCallId);
+    if (pendingCall) {
+      pendingCall.resolve(result);
+      pendingToolCalls.delete(toolCallId);
+    }
   };
+
+  return {
+    textStream,
+    injectToolResult,
+  };
+}
+
+/**
+ * Stream chat that properly integrates with Vercel AI SDK's multi-step tool calling.
+ * This function emits tool-call events and ends the stream, allowing the SDK to
+ * orchestrate tool execution and restart generation with updated messages.
+ */
+export function streamChatForVercelAISDK<
+  TTools extends ReadonlyArray<EphemeralTool<JSONSchema7>>
+>(options: {
+  messages: ModelMessage[];
+  tools: TTools;
+  temperature?: number;
+}): AsyncIterableIterator<
+  | { type: "text"; text: string }
+  | {
+      type: "tool-call";
+      toolCallId: string;
+      toolName: string;
+      args: Record<string, unknown>;
+    }
+> {
+  // Build tool schemas for the native layer
+  const toolSchemas = options.tools.map((tool, idx) => ({
+    id: idx + 1,
+    name: tool.name,
+    description: tool.description ?? "",
+    parameters: tool.jsonSchema,
+  }));
+
+  // Collect all tool calls that occur during generation
+  const collectedToolCalls: Array<{
+    id: number;
+    toolName: string;
+    args: Record<string, unknown>;
+  }> = [];
+
+  const readable = new Readable({ read() {}, objectMode: true });
+
+  // Set up tool callback to collect tool calls (don't end stream)
+  toolBindings.setToolCallback(async (err, id, argsJson) => {
+    if (err) {
+      // Always provide a result to avoid hanging
+      toolBindings.toolResult(id, "{}");
+      return;
+    }
+
+    const tool = options.tools[id - 1]; // toolIds are 1-based
+    if (!tool) {
+      // Always provide a result to avoid hanging
+      toolBindings.toolResult(id, "{}");
+      return;
+    }
+
+    try {
+      const args = JSON.parse(argsJson);
+
+      // Collect tool call for post-processing
+      collectedToolCalls.push({
+        id,
+        toolName: tool.name,
+        args,
+      });
+
+      // Immediately provide placeholder result to Swift to avoid hanging
+      toolBindings.toolResult(id, "{}");
+    } catch (error) {
+      // Always provide a result to avoid hanging
+      toolBindings.toolResult(id, "{}");
+    }
+  });
+
+  const messagesJson = JSON.stringify(options.messages);
+  const schemasJson = JSON.stringify(toolSchemas);
+
+  let generationComplete = false;
+  let fullContent = "";
+
+  toolBindings.generateResponseWithToolsStream(
+    messagesJson,
+    schemasJson,
+    options.temperature ?? undefined,
+    undefined,
+    (err, chunk) => {
+      if (err) {
+        readable.destroy(err as Error);
+        toolBindings.clearToolCallback?.();
+        return;
+      }
+      if (chunk === null || chunk === "") {
+        // Generation completed - process results
+        generationComplete = true;
+        toolBindings.clearToolCallback?.();
+
+        // Check if any tool calls were collected
+        if (collectedToolCalls.length > 0) {
+          // Emit tool calls and end stream (OpenAI-style behavior)
+          for (const call of collectedToolCalls) {
+            readable.push({
+              type: "tool-call",
+              toolCallId: `tool-call-${crypto.randomUUID()}`,
+              toolName: call.toolName,
+              args: call.args,
+            });
+          }
+        }
+
+        readable.push(null);
+        return;
+      }
+
+      // Stream content immediately - this provides real-time streaming
+      fullContent += chunk;
+      readable.push({ type: "text", text: chunk });
+    }
+  );
+
+  return readable[Symbol.asyncIterator]() as AsyncIterableIterator<
+    | { type: "text"; text: string }
+    | {
+        type: "tool-call";
+        toolCallId: string;
+        toolName: string;
+        args: Record<string, unknown>;
+      }
+  >;
 }

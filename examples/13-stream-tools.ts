@@ -1,12 +1,14 @@
 import { z } from "zod";
-import { streamChatWithEphemeralTools } from "../src/apple-ai";
+import { chatWithEphemeralTools } from "../src/apple-ai";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import type { JSONSchema7 } from "json-schema";
 
 async function main() {
   console.log(
     "🔄 Streaming with tools example\n==============================="
   );
 
-  const iterator = streamChatWithEphemeralTools({
+  const iterator = chatWithEphemeralTools({
     messages: [
       {
         role: "user" as const,
@@ -16,12 +18,18 @@ async function main() {
     tools: [
       {
         name: "add",
-        schema: z.object({ a: z.number(), b: z.number() }),
-        handler: ({ a, b }) => a + b,
-      },
+        jsonSchema: zodToJsonSchema(
+          z.object({ a: z.number(), b: z.number() })
+        ) as JSONSchema7,
+        handler: async (args: Record<string, unknown>) => {
+          const { a, b } = args as { a: number; b: number };
+          console.log("Tool result:", a + b);
+          return a + b;
+        },
+      } as const,
     ],
     temperature: 0.2,
-  });
+  } as const);
 
   for await (const chunk of iterator) {
     process.stdout.write(chunk);
