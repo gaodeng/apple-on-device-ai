@@ -28,7 +28,7 @@ bun add ai zod
 ### Native Apple AI Interface
 
 ```typescript
-import { chat, appleAISDK } from "@meridius-labs/apple-on-device-ai";
+import { chat } from "@meridius-labs/apple-on-device-ai";
 
 // Simple text generation
 const response = await chat({ messages: "What is the capital of France?" });
@@ -99,22 +99,20 @@ console.log(withTools.toolCalls); // [{ function: { name: "calculator" }, ... }]
 ### Vercel AI SDK Integration
 
 ```typescript
-import { createAppleAI } from "@meridius-labs/apple-on-device-ai";
+import { appleAI } from "@meridius-labs/apple-on-device-ai";
 import { generateText, streamText, generateObject } from "ai";
 import { z } from "zod";
 
-const ai = createAppleAI();
-
 // Text generation
 const { text } = await generateText({
-  model: ai("apple-on-device"),
+  model: appleAI(),
   messages: [{ role: "user", content: "Explain quantum computing" }],
 });
 console.log(text);
 
 // Streaming
 const { textStream } = await streamText({
-  model: ai("apple-on-device"),
+  model: appleAI(),
   messages: [{ role: "user", content: "Write a poem about technology" }],
 });
 for await (const delta of textStream) {
@@ -123,7 +121,7 @@ for await (const delta of textStream) {
 
 // Structured object generation
 const { object } = await generateObject({
-  model: ai("apple-on-device"),
+  model: appleAI(),
   prompt: "Generate a chocolate chip cookie recipe",
   schema: z.object({
     recipe: z.object({
@@ -137,7 +135,7 @@ console.log(object);
 
 // Tool calling
 const { text, toolCalls } = await generateText({
-  model: ai("apple-on-device"),
+  model: appleAI(),
   messages: [{ role: "user", content: "What's the weather in Tokyo?" }],
   tools: {
     weather: {
@@ -152,6 +150,66 @@ const { text, toolCalls } = await generateText({
   },
 });
 console.log(toolCalls);
+```
+
+### Tool Calling & Structured Generation with Vercel AI SDK
+
+#### Tool Calling Example
+
+You can define tools using the `tool` helper and provide an `inputSchema` (Zod) and an `execute` function. The model will call your tool when appropriate, and you can handle tool calls and streaming output as follows:
+
+```typescript
+import { appleAI } from "@meridius-labs/apple-on-device-ai";
+import { streamText, tool } from "ai";
+import { z } from "zod";
+
+const result = streamText({
+  model: appleAI(),
+  messages: [{ role: "user", content: "What's the weather in Tokyo?" }],
+  tools: {
+    weather: tool({
+      description: "Get weather information",
+      inputSchema: z.object({ location: z.string() }),
+      execute: async ({ location }) => ({
+        temperature: 72,
+        condition: "sunny",
+        location,
+      }),
+    }),
+  },
+});
+
+for await (const delta of result.fullStream) {
+  if (delta.type === "text") {
+    process.stdout.write(delta.text);
+  } else if (delta.type === "tool-call") {
+    console.log(`\n🔧 Tool call: ${delta.toolName}`);
+    console.log(`   Arguments: ${JSON.stringify(delta.input)}`);
+  } else if (delta.type === "tool-result") {
+    console.log(`✅ Tool result: ${JSON.stringify(delta.output)}`);
+  }
+}
+```
+
+#### Structured/Object Generation Example
+
+You can generate structured objects directly from the model using Zod schemas:
+
+```typescript
+import { appleAI } from "@meridius-labs/apple-on-device-ai";
+import { generateObject } from "ai";
+import { z } from "zod";
+
+const { object } = await generateObject({
+  model: appleAI(),
+  prompt: "Generate a user profile",
+  schema: z.object({
+    name: z.string(),
+    age: z.number(),
+    email: z.string().email(),
+  }),
+});
+console.log(object); // { name: "Alice", age: 30, email: "alice@example.com" }
 ```
 
 ## Requirements
