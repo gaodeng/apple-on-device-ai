@@ -1,4 +1,4 @@
-import { unified, appleAISDK } from "../src/apple-ai.js";
+import { chat, appleAISDK } from "../src/apple-ai.js";
 import { z } from "zod";
 import type { JSONSchema7 } from "json-schema";
 
@@ -12,7 +12,7 @@ function assert(condition: boolean, message: string) {
 }
 
 async function runSmokeTest() {
-  console.log("🧪 Unified API Comprehensive Smoke Test");
+  console.log("🧪 Chat API Comprehensive Smoke Test");
   console.log("=======================================\n");
 
   // Check availability
@@ -21,7 +21,7 @@ async function runSmokeTest() {
 
   // Test 1: Basic text generation
   console.log("📝 Test 1: Basic Text Generation");
-  const basic = await unified({
+  const basic = await chat({
     messages: "What is 2+2?",
   });
   assert(typeof basic.text === "string", "Basic generation should return text");
@@ -29,7 +29,7 @@ async function runSmokeTest() {
 
   // Test 2: Messages array
   console.log("\n📝 Test 2: Message History");
-  const withHistory = await unified({
+  const withHistory = await chat({
     messages: [
       { role: "user", content: "My favorite color is blue" },
       { role: "assistant", content: "I'll remember that!" },
@@ -43,11 +43,11 @@ async function runSmokeTest() {
 
   // Test 3: Temperature control
   console.log("\n📝 Test 3: Temperature Control");
-  const lowTemp = await unified({
+  const lowTemp = await chat({
     messages: "Say 'hello'",
     temperature: 0.1,
   });
-  const highTemp = await unified({
+  const highTemp = await chat({
     messages: "Say 'hello'",
     temperature: 0.9,
   });
@@ -58,7 +58,7 @@ async function runSmokeTest() {
 
   // Test 4: Max tokens
   console.log("\n📝 Test 4: Max Tokens");
-  const limited = await unified({
+  const limited = await chat({
     messages: "Count from 1 to 100",
     maxTokens: 10,
   });
@@ -72,7 +72,7 @@ async function runSmokeTest() {
     email: z.string().email(),
   });
 
-  const structured = await unified({
+  const structured = await chat({
     messages: "Provide sample data for the following structure",
     schema: UserSchema,
   });
@@ -107,7 +107,7 @@ async function runSmokeTest() {
     required: ["title", "completed"],
   };
 
-  const jsonStructured = await unified({
+  const jsonStructured = await chat({
     messages: "Provide sample data for the following structure",
     schema: jsonSchema,
   });
@@ -155,7 +155,7 @@ async function runSmokeTest() {
     },
   };
 
-  const withTools = await unified({
+  const withTools = await chat({
     messages: "What is 25 times 4?",
     tools: [mathTool],
   });
@@ -175,7 +175,7 @@ async function runSmokeTest() {
   console.log("\n📝 Test 8: Basic Streaming");
   let streamChunks = 0;
   let streamContent = "";
-  const stream = unified({
+  const stream = chat({
     messages: "Count to 3",
     stream: true,
   });
@@ -190,7 +190,7 @@ async function runSmokeTest() {
   // Test 9: Streaming with stopAfterToolCalls = true (default)
   console.log("\n📝 Test 9: Streaming with Tools (stopAfterToolCalls=true)");
   let earlyTermChunks = 0;
-  const earlyTermStream = unified({
+  const earlyTermStream = chat({
     messages: "What is 10 plus 5?",
     tools: [mathTool],
     stream: true,
@@ -209,7 +209,7 @@ async function runSmokeTest() {
   console.log("\n📝 Test 10: Streaming with Tools (stopAfterToolCalls=false)");
   let fullStreamChunks = 0;
   let fullStreamContent = "";
-  const fullStream = unified({
+  const fullStream = chat({
     messages: "What is 10 plus 5? Explain your answer.",
     tools: [mathTool],
     stream: true,
@@ -241,7 +241,7 @@ async function runSmokeTest() {
     handler: async (args: any) => ({ temperature: 72, condition: "sunny" }),
   };
 
-  const multiTools = await unified({
+  const multiTools = await chat({
     messages: "What's 5 times 6 and what's the weather in Paris?",
     tools: [mathTool, weatherTool],
   });
@@ -252,7 +252,7 @@ async function runSmokeTest() {
   let errorOccurred = false;
   try {
     // Use a clearly invalid JSON schema that will fail parsing
-    await unified({
+    await chat({
       messages: "Test",
       schema: null as any, // This should cause an error
     });
@@ -264,7 +264,7 @@ async function runSmokeTest() {
 
   // Test 13: System messages
   console.log("\n📝 Test 13: System Messages");
-  const withSystem = await unified({
+  const withSystem = await chat({
     messages: [
       {
         role: "system",
@@ -277,7 +277,7 @@ async function runSmokeTest() {
 
   // Test 14: Mixed content with tools and no execution
   console.log("\n📝 Test 14: Tools Without Execution");
-  const noExecution = await unified({
+  const noExecution = await chat({
     messages: "Tell me about calculators without using any tools",
     tools: [mathTool],
   });
@@ -289,7 +289,7 @@ async function runSmokeTest() {
   // Test 15: Edge case - empty messages
   console.log("\n📝 Test 15: Edge Cases");
   try {
-    await unified({
+    await chat({
       messages: "",
     });
     assert(true, "Should handle empty string message");
@@ -300,9 +300,9 @@ async function runSmokeTest() {
   // Test 16: Concurrent requests
   console.log("\n📝 Test 16: Concurrent Requests");
   const [r1, r2, r3] = await Promise.all([
-    unified({ messages: "Say 'one'" }),
-    unified({ messages: "Say 'two'" }),
-    unified({ messages: "Say 'three'" }),
+    chat({ messages: "Say 'one'" }),
+    chat({ messages: "Say 'two'" }),
+    chat({ messages: "Say 'three'" }),
   ]);
   assert(
     r1.text.length > 0 && r2.text.length > 0 && r3.text.length > 0,

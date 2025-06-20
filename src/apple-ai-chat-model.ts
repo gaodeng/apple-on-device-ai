@@ -16,7 +16,7 @@ import type { ChatMessage } from "./apple-ai";
 import {
   appleAISDK as appleAIInstance,
   streamChatForVercelAISDK,
-  unified,
+  chat,
 } from "./apple-ai";
 import type { AppleAIModelId, AppleAISettings } from "./apple-ai-provider";
 import type { ModelMessage } from "ai";
@@ -119,8 +119,8 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
     const messages = this.convertPromptToMessages(options.prompt);
 
     try {
-      // Use unified() with schema for structured generation
-      const result = await unified({
+      // Use chat() with schema for structured generation
+      const result = await chat({
         messages,
         schema,
         temperature: this.settings.temperature,
@@ -192,7 +192,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
 
       const messages = this.convertPromptToMessages(options.prompt);
 
-      const result = await unified({
+      const result = await chat({
         messages: messages,
         tools: epTools,
         temperature: this.settings.temperature,
@@ -238,7 +238,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
     } else {
       // No tools - simple chat
       const messages = this.convertPromptToMessages(options.prompt);
-      const result = await unified({
+      const result = await chat({
         messages: messages,
         temperature: this.settings.temperature,
       });

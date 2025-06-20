@@ -1,9 +1,9 @@
-import { unified, appleAISDK } from "../src/apple-ai.js";
+import { chat, appleAISDK } from "../src/apple-ai.js";
 import { z } from "zod";
 import type { JSONSchema7 } from "json-schema";
 
 async function main() {
-  console.log("🍎 Unified API Demo - All Capabilities in One Function");
+  console.log("🍎 Chat API Demo - All Capabilities in One Function");
   console.log("======================================================\n");
 
   // Check availability first
@@ -17,7 +17,7 @@ async function main() {
   console.log("1️⃣  Basic Text Generation");
   console.log("--------------------------");
   try {
-    const basic = await unified({
+    const basic = await chat({
       messages: "What is the capital of France?",
       temperature: 0.7,
     });
@@ -30,7 +30,7 @@ async function main() {
   console.log("\n2️⃣  Generation with Message History");
   console.log("------------------------------------");
   try {
-    const withHistory = await unified({
+    const withHistory = await chat({
       messages: [
         { role: "system", content: "You are a helpful assistant." },
         { role: "user", content: "My name is Alice." },
@@ -53,7 +53,7 @@ async function main() {
   });
 
   try {
-    const structured = await unified({
+    const structured = await chat({
       messages: "Provide sample data for the following structure", // Guardrail-safe prompt
       schema: PersonSchema,
     });
@@ -83,7 +83,7 @@ async function main() {
       },
     };
 
-    const withTools = await unified({
+    const withTools = await chat({
       messages: "What's the weather in Tokyo?",
       tools: [weatherTool],
     });
@@ -100,7 +100,7 @@ async function main() {
   console.log("----------------------");
   try {
     console.log("Streaming: ");
-    const stream = unified({
+    const stream = chat({
       messages: "Count from 1 to 5 slowly",
       stream: true,
     });
@@ -149,7 +149,7 @@ async function main() {
     };
 
     console.log("Streaming with tools: ");
-    const toolStream = unified({
+    const toolStream = chat({
       messages: "What is 15 multiplied by 7?",
       tools: [mathTool],
       stream: true,
@@ -171,7 +171,7 @@ async function main() {
   console.log("------------------------------------------------");
   try {
     console.log("Streaming: ");
-    const simpleStream = unified({
+    const simpleStream = chat({
       messages: "What is 15 multiplied by 7? Just give me the answer.",
       stream: true,
     });
@@ -186,7 +186,7 @@ async function main() {
     console.error("Error:", error);
   }
 
-  console.log("✅ Unified API demo complete!");
+  console.log("✅ Chat API demo complete!");
 }
 
 main().catch(console.error);

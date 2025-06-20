@@ -617,254 +617,9 @@ export function streamChatForVercelAISDK<
 }
 
 /**
- * Unified chat function that handles all tool and streaming scenarios
- */
-export async function chat<
-  TTools extends ReadonlyArray<EphemeralTool<any>>
->(options: {
-  messages: ModelMessage[] | string;
-  tools?: TTools;
-  temperature?: number;
-  stream?: false;
-}): Promise<{ content?: string; error?: string; toolCalls?: any[] }>;
-
-export function chat<
-  TTools extends ReadonlyArray<EphemeralTool<any>>
->(options: {
-  messages: ModelMessage[] | string;
-  tools?: TTools;
-  temperature?: number;
-  stream: true;
-  format?: "simple" | "vercel";
-}): AsyncIterableIterator<
-  | string
-  | { type: "text"; text: string }
-  | {
-      type: "tool-call";
-      toolCallId: string;
-      toolName: string;
-      args: Record<string, unknown>;
-    }
->;
-
-export function chat<
-  TTools extends ReadonlyArray<EphemeralTool<any>>
->(options: {
-  messages: ModelMessage[] | string;
-  tools?: TTools;
-  temperature?: number;
-  stream?: boolean;
-  format?: "simple" | "vercel";
-}):
-  | Promise<{ content?: string; error?: string; toolCalls?: any[] }>
-  | AsyncIterableIterator<any> {
-  const {
-    messages,
-    tools = [] as unknown as TTools,
-    temperature,
-    stream = false,
-    format = "simple",
-  } = options;
-
-  // Normalize messages to array format
-  const normalizedMessages: ModelMessage[] =
-    typeof messages === "string"
-      ? [{ role: "user", content: messages }]
-      : messages;
-
-  if (!stream) {
-    // Non-streaming: implement directly
-    return (async () => {
-      const toolMap = new Map<
-        number,
-        {
-          tool: { execute: (args: unknown) => unknown | Promise<unknown> };
-          schema: unknown;
-        }
-      >();
-
-      try {
-        // Setup tools if provided
-        let toolSchemas: any[] = [];
-        if (Array.isArray(tools) && tools.length > 0) {
-          let toolId = 1;
-
-          // Handle array format: [{ name, schema, handler }]
-          for (const tool of tools) {
-            const jsonSchema = {
-              id: toolId,
-              name: tool.name,
-              description: tool.description || "",
-              parameters: tool.jsonSchema,
-            };
-
-            toolMap.set(toolId, {
-              tool: { execute: tool.handler },
-              schema: jsonSchema,
-            });
-            toolSchemas.push(jsonSchema);
-            toolId++;
-          }
-        }
-
-        // Setup global tool callback once for all tools
-        if (toolMap.size > 0) {
-          toolBindings.setToolCallback(
-            async (err: Error | null, toolId: number, argsJson: string) => {
-              if (err) {
-                debugErr("Tool callback error:", err);
-                return;
-              }
-
-              debug(
-                "Callback received - toolId:",
-                toolId,
-                `(type: ${typeof toolId})`,
-                "argsJson:",
-                argsJson
-              );
-
-              const tool = toolMap.get(toolId)?.tool;
-              if (!tool) {
-                debug(
-                  `Tool ${toolId} not found in map. Available tools:`,
-                  Array.from(toolMap.keys())
-                );
-                toolBindings.toolResult(toolId, "{}");
-                return;
-              }
-
-              try {
-                const args: unknown = JSON.parse(argsJson);
-                debug(`Tool ${toolId} called with args:`, args);
-                const result = await tool.execute(args);
-                debug(`Tool ${toolId} returned:`, result);
-                toolBindings.toolResult(toolId, JSON.stringify(result));
-              } catch (error) {
-                debugErr(`Tool ${toolId} error:`, error);
-                toolBindings.toolResult(toolId, "{}");
-              }
-            }
-          );
-        }
-
-        // Use unified generation
-        const raw = await unifiedBindings.generateUnified(
-          JSON.stringify(normalizedMessages),
-          toolSchemas.length > 0 ? JSON.stringify(toolSchemas) : null,
-          null, // no schema for structured output
-          temperature ?? 0.7,
-          undefined, // maxTokens
-          true // stopAfterToolCalls default
-        );
-
-        // Check if the response is an error string from the native layer
-        if (raw.startsWith("Error: ")) {
-          return {
-            error: raw.slice(7), // Remove "Error: " prefix
-            content: undefined,
-          };
-        }
-
-        const parsed = JSON.parse(raw) as { text: string; toolCalls?: any[] };
-        return {
-          content: parsed.text,
-          ...(parsed.toolCalls ? { toolCalls: parsed.toolCalls } : {}),
-        };
-      } finally {
-        if (toolBindings.clearToolCallback) toolBindings.clearToolCallback();
-      }
-    })();
-  }
-
-  // Streaming: route to appropriate function based on format
-  switch (format) {
-    case "vercel":
-      return streamChatForVercelAISDK({
-        messages: normalizedMessages,
-        tools,
-        temperature,
-      });
-
-    case "simple":
-    default:
-      // Implement simple streaming directly
-      const toolMap = new Map<number, EphemeralTool<any>>();
-      const toolSchemas = tools.map((tool, idx) => {
-        const id = idx + 1;
-        toolMap.set(id, tool);
-        return {
-          id,
-          name: tool.name,
-          description: tool.description ?? "",
-          parameters: tool.jsonSchema,
-        };
-      });
-
-      // Global callback that invokes the correct handler and returns result back to Swift
-      toolBindings.setToolCallback(async (err, id, argsJson) => {
-        if (err) return;
-        const tool = toolMap.get(id);
-        if (!tool) {
-          toolBindings.toolResult(id, "{}");
-          return;
-        }
-        try {
-          const result = await tool.handler(JSON.parse(argsJson));
-          toolBindings.toolResult(id, JSON.stringify(result ?? null));
-        } catch {
-          toolBindings.toolResult(id, "{}");
-        }
-      });
-
-      const messagesJson = JSON.stringify(normalizedMessages);
-      const schemasJson = JSON.stringify(toolSchemas);
-
-      // Use a Node/Bun Readable stream (object-mode) to bridge callback → async iterator
-      const readable = new Readable({ read() {}, objectMode: true });
-
-      // Clear callback only after native layer tells us the stream is finished
-      const clear = () => toolBindings.clearToolCallback?.();
-
-      unifiedBindings.generateUnifiedStream(
-        messagesJson,
-        toolSchemas.length > 0 ? schemasJson : null,
-        null, // no schema
-        temperature ?? undefined,
-        undefined,
-        true, // stopAfterToolCalls default (OpenAI behavior)
-        (err, chunk) => {
-          if (err) {
-            readable.destroy(err as Error);
-            clear();
-            return;
-          }
-          if (chunk === null || chunk === "") {
-            readable.push(null); // EOS
-            clear();
-            return;
-          }
-          readable.push(chunk);
-        }
-      );
-
-      // Expose the stream as an async iterator of strings
-      return readable[Symbol.asyncIterator]() as AsyncIterableIterator<string>;
-  }
-}
-
-/**
  * Unified generation function that exposes all capabilities
- *
- * This is the most flexible API that allows you to:
- * - Generate text with message history
- * - Use tools for function calling
- * - Generate structured output with JSON schemas
- * - Stream responses
- *
- * Note: Tools take precedence over schema. If both are provided, schema is ignored.
  */
-export async function unified<T = unknown>(options: {
+export async function chat<T = unknown>(options: {
   messages: ChatMessage[] | string;
   tools?: EphemeralTool<JSONSchema7>[];
   schema?: z.ZodType<T> | JSONSchema7;
@@ -874,7 +629,7 @@ export async function unified<T = unknown>(options: {
   stream?: false;
 }): Promise<{ text: string; object?: T; toolCalls?: any[] }>;
 
-export function unified<T = unknown>(options: {
+export function chat<T = unknown>(options: {
   messages: ChatMessage[] | string;
   tools?: EphemeralTool<JSONSchema7>[];
   schema?: z.ZodType<T> | JSONSchema7;
@@ -884,7 +639,7 @@ export function unified<T = unknown>(options: {
   stream: true;
 }): AsyncIterableIterator<string>;
 
-export function unified<T = unknown>(options: {
+export function chat<T = unknown>(options: {
   messages: ChatMessage[] | string;
   tools?: EphemeralTool<JSONSchema7>[];
   schema?: z.ZodType<T> | JSONSchema7;
@@ -1003,7 +758,7 @@ export function unified<T = unknown>(options: {
         );
 
         // Check if the response is an error string from the native layer
-        console.log("DEBUG: Raw response from unified:", raw, typeof raw);
+        console.log("DEBUG: Raw response from chat:", raw, typeof raw);
         if (raw && raw.startsWith("Error: ")) {
           throw new Error(raw.slice(7)); // Remove "Error: " prefix and throw
         }
