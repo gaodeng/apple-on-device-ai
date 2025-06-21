@@ -359,10 +359,13 @@ pub fn generate_unified_stream(
         let mut guard = mutex.lock().unwrap();
         if let Some(state) = guard.as_mut() {
             if ptr.is_null() {
+                // Send the end-of-stream signal to JavaScript
                 let _ = state
                     .tsfn
                     .call(Ok(String::new()), ThreadsafeFunctionCallMode::NonBlocking);
-                let _ = state.tsfn.clone().abort();
+
+                // Don't abort immediately - let the callback complete naturally
+                // The cleanup will happen when the state is dropped
                 *guard = None;
                 return;
             }
