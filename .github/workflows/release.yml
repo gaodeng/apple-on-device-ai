@@ -10,11 +10,6 @@ on:
         default: "patch"
         type: choice
         options: [patch, minor, major, prerelease]
-      skip-tests:
-        description: "Skip local test verification (use with caution)"
-        required: false
-        default: false
-        type: boolean
   push:
     tags:
       - "v*.*.*"
