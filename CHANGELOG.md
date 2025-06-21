@@ -1,3 +1,11 @@
+## [1.4.4] - 2025-06-21
+
+### Changes
+- fix: remove unused skip-tests parameter from release workflow
+- build: update native binaries with streaming race condition fix
+- fix: improve CI/CD architecture and eliminate duplicate publishing
+- fix: resolve streaming race condition in lib.rs
+
 ## [1.4.3] - 2025-06-21
 
 ### Added
