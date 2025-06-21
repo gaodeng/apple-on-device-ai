@@ -1,0 +1,48 @@
+name: Test Reminder
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  push:
+    branches: [main, develop]
+
+jobs:
+  remind-local-testing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remind about local testing
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const body = `## 🧪 Test Reminder
+
+            This library requires **Apple Intelligence** and **Apple Silicon** hardware to run tests.
+
+            ### ✅ Before merging, please confirm locally:
+
+            \`\`\`bash
+            # Run all tests
+            bun test
+            \`\`\`
+
+            ### 📋 Checklist:
+            - [ ] Tests pass locally on Apple Silicon Mac
+            - [ ] Basic streaming examples work
+            - [ ] No hanging or race conditions observed
+
+            **CI cannot run these tests** due to Apple Intelligence hardware requirements.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Log test reminder (push)
+        if: github.event_name == 'push'
+        run: |
+          echo "🧪 REMINDER: This library requires local testing on Apple Silicon"
+          echo "📝 Tests cannot run in CI due to Apple Intelligence requirements"
+          echo "✅ Make sure to run 'bun test' locally before pushing"

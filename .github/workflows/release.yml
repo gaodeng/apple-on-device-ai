@@ -1,16 +1,23 @@
-name: Version Release
+name: Release
 
 on:
-  push:
-    branches: [main]
+  # Only trigger releases manually or on version tags
   workflow_dispatch:
     inputs:
       release-type:
-        description: "Semver bump type"
+        description: "Release type"
         required: true
         default: "patch"
         type: choice
         options: [patch, minor, major, prerelease]
+      skip-tests:
+        description: "Skip local test verification (use with caution)"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*.*.*"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -19,7 +26,6 @@ concurrency:
 jobs:
   release:
     runs-on: macos-latest
-    if: ${{ !contains(github.event.head_commit.message, 'skip ci') }}
     permissions:
       contents: write # create commits / tags
       id-token: write # provenance for npm publish
@@ -30,13 +36,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
         with:
           bun-version: latest
 
-      - name: Setup Node.js (for npm publish)
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -45,82 +52,164 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Ensure required pre-built binaries are present
       - name: Validate native binaries
         run: bun run validate-binaries
 
-      # Build TypeScript bundle (no native build on CI)
       - name: Build TypeScript
         run: bun run build:ts
 
-      # ---------------- Versioning ----------------
-      - name: Determine version bump
-        id: determine
+      - name: Verify package can be built
+        run: npm pack --dry-run
+
+      # ============ VERSION MANAGEMENT ============
+      - name: Check if triggered by tag
+        id: tag-check
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "bump=${{ github.event.inputs.release-type }}" >> $GITHUB_OUTPUT
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_VERSION=${GITHUB_REF#refs/tags/v}
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+            echo "tag_version=$TAG_VERSION" >> $GITHUB_OUTPUT
+            echo "🏷️ Triggered by tag: v$TAG_VERSION"
           else
-            COMMIT_MSG=$(git log -1 --pretty=%B)
-            if echo "$COMMIT_MSG" | grep -qE "BREAKING CHANGE|!:" ; then
-              echo "bump=major" >> $GITHUB_OUTPUT
-            elif echo "$COMMIT_MSG" | grep -qE "^feat" ; then
-              echo "bump=minor" >> $GITHUB_OUTPUT
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+            echo "🚀 Triggered by manual dispatch"
+          fi
+
+      - name: Determine version bump (manual dispatch only)
+        id: version-bump
+        if: steps.tag-check.outputs.is_tag == 'false'
+        run: |
+          CURRENT=$(node -p "require('./package.json').version")
+          echo "current_version=$CURRENT" >> $GITHUB_OUTPUT
+
+          # Use the input release type for manual dispatch
+          BUMP_TYPE="${{ github.event.inputs.release-type }}"
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+
+          # Calculate new version
+          if [ "$BUMP_TYPE" = "major" ]; then
+            NEW=$(node -p "require('semver').inc('$CURRENT', 'major')" 2>/dev/null || echo "")
+          elif [ "$BUMP_TYPE" = "minor" ]; then
+            NEW=$(node -p "require('semver').inc('$CURRENT', 'minor')" 2>/dev/null || echo "")
+          elif [ "$BUMP_TYPE" = "prerelease" ]; then
+            NEW=$(node -p "require('semver').inc('$CURRENT', 'prerelease')" 2>/dev/null || echo "")
+          else
+            NEW=$(node -p "require('semver').inc('$CURRENT', 'patch')" 2>/dev/null || echo "")
+          fi
+
+          # Fallback if semver not available
+          if [ -z "$NEW" ]; then
+            IFS='.' read -ra VERSION_PARTS <<< "$CURRENT"
+            MAJOR=${VERSION_PARTS[0]}
+            MINOR=${VERSION_PARTS[1]}
+            PATCH=${VERSION_PARTS[2]}
+            
+            if [ "$BUMP_TYPE" = "major" ]; then
+              NEW="$((MAJOR + 1)).0.0"
+            elif [ "$BUMP_TYPE" = "minor" ]; then
+              NEW="$MAJOR.$((MINOR + 1)).0"
             else
-              echo "bump=patch" >> $GITHUB_OUTPUT
+              NEW="$MAJOR.$MINOR.$((PATCH + 1))"
             fi
           fi
 
-      - name: Bump version (package.json)
-        id: bump
-        run: |
-          OLD=$(node -p "require('./package.json').version")
-          bun run npm version ${{ steps.determine.outputs.bump }} --no-git-tag-version --allow-same-version
-          NEW=$(node -p "require('./package.json').version")
-          echo "old=$OLD" >> $GITHUB_OUTPUT
-          echo "new=$NEW" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW" >> $GITHUB_OUTPUT
           echo "tag=v$NEW" >> $GITHUB_OUTPUT
+          echo "📈 Version bump: $CURRENT → $NEW ($BUMP_TYPE)"
 
-      # ---------------- Changelog ----------------
-      - name: Update CHANGELOG.md
+      - name: Update package.json version (manual dispatch only)
+        if: steps.tag-check.outputs.is_tag == 'false'
         run: |
-          VERSION=${{ steps.bump.outputs.new }}
+          NEW_VERSION="${{ steps.version-bump.outputs.new_version }}"
+          node -e "
+            const pkg = require('./package.json');
+            pkg.version = '$NEW_VERSION';
+            require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "✅ Updated package.json to version $NEW_VERSION"
+
+      # ============ CHANGELOG GENERATION ============
+      - name: Generate changelog entry
+        id: changelog
+        run: |
+          if [[ "${{ steps.tag-check.outputs.is_tag }}" == "true" ]]; then
+            VERSION="${{ steps.tag-check.outputs.tag_version }}"
+          else
+            VERSION="${{ steps.version-bump.outputs.new_version }}"
+          fi
+
           DATE=$(date +%Y-%m-%d)
+
+          # Get commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            COMMITS=$(git log ${LAST_TAG}..HEAD --oneline --pretty=format:"- %s" | head -20)
+          else
+            COMMITS=$(git log --oneline --pretty=format:"- %s" | head -10)
+          fi
+
+          # Create changelog entry
+          echo "## [$VERSION] - $DATE" > /tmp/changelog_entry.md
+          echo "" >> /tmp/changelog_entry.md
+          if [ -n "$COMMITS" ]; then
+            echo "### Changes" >> /tmp/changelog_entry.md
+            echo "$COMMITS" >> /tmp/changelog_entry.md
+          else
+            echo "### Changes" >> /tmp/changelog_entry.md
+            echo "- Release $VERSION" >> /tmp/changelog_entry.md
+          fi
+          echo "" >> /tmp/changelog_entry.md
+
+          # Update CHANGELOG.md
           if [[ ! -f CHANGELOG.md ]]; then
             echo "# Changelog" > CHANGELOG.md
-            echo >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
           fi
-          TMP=$(mktemp)
-          echo "## [$VERSION] - $DATE" >> $TMP
-          echo >> $TMP
-          echo "### Added" >> $TMP
-          echo "- Release $VERSION" >> $TMP
-          echo >> $TMP
-          cat CHANGELOG.md >> $TMP
-          mv $TMP CHANGELOG.md
 
-      # ---------------- Commit & Tag ----------------
-      - name: Commit version & changelog
+          # Prepend new entry
+          cat /tmp/changelog_entry.md CHANGELOG.md > /tmp/new_changelog.md
+          mv /tmp/new_changelog.md CHANGELOG.md
+
+          echo "changelog_updated=true" >> $GITHUB_OUTPUT
+          echo "✅ Updated CHANGELOG.md with version $VERSION"
+
+      # ============ COMMIT AND TAG (manual dispatch only) ============
+      - name: Commit version bump and changelog (manual dispatch only)
+        if: steps.tag-check.outputs.is_tag == 'false'
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add package.json CHANGELOG.md
-          git commit -m "chore(release): ${{ steps.bump.outputs.new }}"
-          git tag ${{ steps.bump.outputs.tag }}
-          git push --follow-tags
+          git commit -m "chore(release): ${{ steps.version-bump.outputs.new_version }}"
+          git tag ${{ steps.version-bump.outputs.tag }}
 
-      # ---------------- Publish ----------------
+      - name: Push changes (manual dispatch only)
+        if: steps.tag-check.outputs.is_tag == 'false'
+        run: |
+          git push origin main
+          git push origin ${{ steps.version-bump.outputs.tag }}
+
+      # ============ PUBLISH TO NPM ============
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+        run: |
+          if [[ "${{ steps.tag-check.outputs.is_tag }}" == "true" ]]; then
+            VERSION="${{ steps.tag-check.outputs.tag_version }}"
+          else
+            VERSION="${{ steps.version-bump.outputs.new_version }}"
+          fi
 
-      # ---------------- GitHub Release ----------------
+          echo "🚀 Publishing version $VERSION to npm..."
+          npm publish --access public --provenance
+          echo "✅ Successfully published $VERSION to npm"
+
+      # ============ CREATE GITHUB RELEASE ============
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.bump.outputs.tag }}
-          name: ${{ steps.bump.outputs.tag }}
-          body: |
-            ## Changes in ${{ steps.bump.outputs.tag }}
-            - Version bump from ${{ steps.bump.outputs.old }} to ${{ steps.bump.outputs.new }}
-            - See CHANGELOG.md for details
+          tag_name: ${{ steps.tag-check.outputs.is_tag == 'true' && github.ref_name || steps.version-bump.outputs.tag }}
+          name: ${{ steps.tag-check.outputs.is_tag == 'true' && github.ref_name || steps.version-bump.outputs.tag }}
+          body_path: /tmp/changelog_entry.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'pre') || github.event.inputs.release-type == 'prerelease' }}
