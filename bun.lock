@@ -8,7 +8,7 @@
         "@ai-sdk/provider-utils": "3.0.0-alpha.15",
         "@types/json-schema": "^7.0.15",
         "json-schema": "^0.4.0",
-        "zod-to-json-schema": "^^3.24.5",
+        "zod-to-json-schema": "^3.24.5",
       },
       "devDependencies": {
         "@types/bun": "latest",
