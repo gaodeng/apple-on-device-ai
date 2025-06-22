@@ -1,3 +1,8 @@
+## [1.5.0] - 2025-06-22
+
+### Changes
+- feat: major refactoring and tooling improvements
+
 ## [1.4.4] - 2025-06-21
 
 ### Changes
