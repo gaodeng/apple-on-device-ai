@@ -1,3 +1,8 @@
+## [1.5.1] - 2025-06-23
+
+### Changes
+- fix: include binaries (hotfix)
+
 ## [1.5.0] - 2025-06-22
 
 ### Changes
