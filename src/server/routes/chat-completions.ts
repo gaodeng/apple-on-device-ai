@@ -1,7 +1,7 @@
 import { defineEventHandler, readBody } from "h3";
-import { appleAISDK, chat } from "../../apple-ai";
-import type { ChatMessage, EphemeralTool } from "../../apple-ai";
-import type { JSONSchema7 } from "json-schema";
+import { appleAI } from "../../apple-ai-provider";
+import { streamText, generateText, generateObject, tool } from "ai";
+import { z } from "zod";
 import type {
   ChatCompletionCreateParams,
   ChatCompletionChunk,
@@ -10,27 +10,82 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat";
 
-function convertMessages(
-  openAIMessages: ChatCompletionCreateParams["messages"]
-): ChatMessage[] {
-  return openAIMessages.map((msg) => ({
-    role: msg.role as "system" | "user" | "assistant" | "tool" | "tool_calls",
-    content:
+// Helper to convert OpenAI messages to simple format for AI SDK
+function convertOpenAIMessages(
+  messages: ChatCompletionCreateParams["messages"]
+) {
+  return messages.map((msg) => {
+    const content =
       typeof msg.content === "string"
         ? msg.content
-        : JSON.stringify(msg.content),
-    name: "name" in msg ? msg.name : undefined,
-    tool_calls:
-      msg.role === "assistant" && "tool_calls" in msg
-        ? msg.tool_calls
-        : undefined,
-    tool_call_id:
-      msg.role === "tool" && "tool_call_id" in msg
-        ? msg.tool_call_id
-        : undefined,
-  }));
+        : JSON.stringify(msg.content);
+
+    return {
+      role: msg.role as "system" | "user" | "assistant",
+      content,
+    };
+  });
 }
 
+// Helper to convert JSON Schema to Zod schema
+function jsonSchemaToZod(schema: Record<string, any>): z.ZodType<any> {
+  if (schema.type === "object" && schema.properties) {
+    const zodFields: Record<string, z.ZodType<any>> = {};
+
+    for (const [key, value] of Object.entries(
+      schema.properties as Record<string, any>
+    )) {
+      let fieldSchema: z.ZodType<any>;
+
+      if (value.type === "string") {
+        fieldSchema = z.string();
+      } else if (value.type === "number") {
+        fieldSchema = z.number();
+      } else if (value.type === "integer") {
+        fieldSchema = z.number().int();
+      } else if (value.type === "boolean") {
+        fieldSchema = z.boolean();
+      } else if (value.type === "array") {
+        fieldSchema = z.array(z.any());
+      } else {
+        fieldSchema = z.any();
+      }
+
+      if (value.description) {
+        fieldSchema = fieldSchema.describe(value.description);
+      }
+
+      if (!schema.required?.includes(key)) {
+        fieldSchema = fieldSchema.optional();
+      }
+
+      zodFields[key] = fieldSchema;
+    }
+
+    return z.object(zodFields);
+  }
+
+  return z.any();
+}
+
+// Helper to convert OpenAI tools to AI SDK tools
+function convertOpenAITools(openAITools: ChatCompletionTool[]) {
+  const tools: Record<string, any> = {};
+
+  for (const openAITool of openAITools) {
+    const toolName = openAITool.function.name;
+    const inputSchema = jsonSchemaToZod(openAITool.function.parameters || {});
+
+    tools[toolName] = tool({
+      description: openAITool.function.description || "",
+      inputSchema,
+    });
+  }
+
+  return tools;
+}
+
+// Helper to create OpenAI-compatible chat completion message
 function createChatCompletionMessage(
   role: "assistant",
   content: string | null,
@@ -59,101 +114,81 @@ export const chatCompletions = defineEventHandler(async (event) => {
   const {
     messages,
     temperature: rawTemperature,
-    max_tokens: rawMaxTokens,
     stream = false,
     tools,
     response_format,
   } = body;
 
-  // Validate that messages is present and an array
+  // Validate required fields
   if (!Array.isArray(messages)) {
     event.node.res.statusCode = 400;
     return { error: "'messages' field is required and must be an array" };
   }
 
+  // Validate messages array is not empty
+  if (messages.length === 0) {
+    event.node.res.statusCode = 400;
+    return { error: "messages array cannot be empty" };
+  }
+
   // Convert null values to undefined for our API
   const temperature = rawTemperature !== null ? rawTemperature : undefined;
-  const maxTokens = rawMaxTokens !== null ? rawMaxTokens : undefined;
+  const maxOutputTokens =
+    body.max_completion_tokens ?? body.max_tokens ?? undefined;
 
-  // Check Apple Intelligence availability
-  const availability = await appleAISDK.checkAvailability();
-  if (!availability.available) {
+  // Create Apple AI model
+  const appleAIModel = appleAI("apple-on-device", { temperature });
+  const convertedMessages = convertOpenAIMessages(messages);
+  const aiSDKTools = tools ? convertOpenAITools(tools) : undefined;
+
+  // Test availability by trying a simple call
+  try {
+    await generateText({
+      model: appleAIModel,
+      prompt: "test",
+      maxOutputTokens: 1,
+    });
+  } catch (error) {
     event.node.res.statusCode = 503;
     return {
       error: {
-        message: `Apple Intelligence not available: ${availability.reason}`,
+        message: `Apple Intelligence not available: ${
+          (error as Error).message
+        }`,
         type: "service_unavailable",
         code: "apple_intelligence_unavailable",
       },
     };
   }
 
-  const convertedMessages = convertMessages(messages);
-
   if (stream) {
-    // Handle streaming response
+    // Streaming response using AI SDK
     event.node.res.setHeader("Content-Type", "text/event-stream");
     event.node.res.setHeader("Cache-Control", "no-cache");
     event.node.res.setHeader("Connection", "keep-alive");
     event.node.res.setHeader("X-Accel-Buffering", "no");
 
     const res = event.node.res;
+    const streamId = `chatcmpl-${crypto.randomUUID()}`;
+    const created = Math.floor(Date.now() / 1000);
 
     try {
-      const streamId = `chatcmpl-${crypto.randomUUID()}`;
-      const created = Math.floor(Date.now() / 1000);
-
-      if (tools && tools.length > 0) {
-        // Convert tools to our format
-        const ephemeralTools: EphemeralTool<JSONSchema7>[] = tools.map(
-          (tool: ChatCompletionTool) => ({
-            name: tool.function.name,
-            description: tool.function.description || "",
-            jsonSchema: (tool.function.parameters || {}) as JSONSchema7,
-            handler: async (args: Record<string, unknown>) => ({}), // Dummy handler
-          })
-        );
-
-        // Use chat with tools and streaming
-        const result = chat({
-          messages: convertedMessages,
-          tools: ephemeralTools,
-          temperature,
-          maxTokens,
-          stream: true,
-        });
-
-        for await (const chunk of result) {
-          const data: ChatCompletionChunk = {
-            id: streamId,
-            object: "chat.completion.chunk",
-            created,
-            model: "apple-on-device",
-            choices: [
-              {
-                index: 0,
-                delta: {
-                  content: chunk,
-                },
-                finish_reason: null,
-              },
-            ],
-          };
-          res.write(`data: ${JSON.stringify(data)}\n\n`);
-        }
-      } else if (
+      if (
         response_format?.type === "json_schema" &&
-        response_format.json_schema
+        response_format.json_schema?.schema
       ) {
-        // Structured output - use chat with schema
-        const result = await chat({
+        // Structured output streaming using AI SDK generateObject
+        const zodSchema = jsonSchemaToZod(response_format.json_schema.schema);
+
+        const result = await generateObject({
+          model: appleAIModel,
           messages: convertedMessages,
-          schema: response_format.json_schema.schema,
+          schema: zodSchema,
           temperature,
-          maxTokens,
+          maxOutputTokens,
         });
 
-        // For structured output, we send the result as a single chunk
+        // Send structured result as single chunk
         const data: ChatCompletionChunk = {
           id: streamId,
           object: "chat.completion.chunk",
@@ -163,6 +198,7 @@ export const chatCompletions = defineEventHandler(async (event) => {
             {
               index: 0,
               delta: {
+                role: "assistant",
                 content: JSON.stringify(result.object),
               },
               finish_reason: null,
@@ -171,18 +207,94 @@ export const chatCompletions = defineEventHandler(async (event) => {
         };
         res.write(`data: ${JSON.stringify(data)}\n\n`);
       } else {
-        // Regular streaming
-        const iterator = appleAISDK.streamChatCompletion(convertedMessages, {
+        // Regular streaming with optional tools using AI SDK
+        const { fullStream } = streamText({
+          model: appleAIModel,
+          messages: convertedMessages,
+          tools: aiSDKTools,
           temperature,
-          maxTokens,
+          maxOutputTokens,
         });
 
-        for await (const chunk of iterator) {
-          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        let sentRole = false;
+
+        // Stream content and handle tool calls
+        for await (const chunk of fullStream) {
+          if (chunk.type === "text") {
+            const delta: Record<string, unknown> = {};
+
+            if (!sentRole) {
+              delta.role = "assistant";
+              sentRole = true;
+            }
+
+            if (chunk.text) {
+              delta.content = chunk.text;
+            }
+
+            const data: ChatCompletionChunk = {
+              id: streamId,
+              object: "chat.completion.chunk",
+              created,
+              model: "apple-on-device",
+              choices: [
+                {
+                  index: 0,
+                  delta,
+                  finish_reason: null,
+                },
+              ],
+            };
+
+            res.write(`data: ${JSON.stringify(data)}\n\n`);
+          } else if (chunk.type === "tool-call") {
+            // Stream tool calls
+            const toolCallDelta: ChatCompletionChunk = {
+              id: streamId,
+              object: "chat.completion.chunk",
+              created,
+              model: "apple-on-device",
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: chunk.toolCallId,
+                        type: "function",
+                        function: {
+                          name: chunk.toolName,
+                          arguments: JSON.stringify(chunk.input),
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: null,
+                },
+              ],
+            };
+            res.write(`data: ${JSON.stringify(toolCallDelta)}\n\n`);
+          }
+          // Note: tool-result chunks are handled by the AI SDK internally
         }
       }
 
-      // Send final done message
+      // Send final chunk
+      const finalData: ChatCompletionChunk = {
+        id: streamId,
+        object: "chat.completion.chunk",
+        created,
+        model: "apple-on-device",
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: "stop",
+          },
+        ],
+      };
+      res.write(`data: ${JSON.stringify(finalData)}\n\n`);
       res.write("data: [DONE]\n\n");
       res.end();
     } catch (error) {
@@ -197,91 +309,21 @@ export const chatCompletions = defineEventHandler(async (event) => {
       res.end();
     }
   } else {
-    // Handle non-streaming response
+    // Non-streaming response using AI SDK
     try {
-      if (tools && tools.length > 0) {
-        // Convert tools to our format
-        const ephemeralTools: EphemeralTool<JSONSchema7>[] = tools.map(
-          (tool: ChatCompletionTool) => ({
-            name: tool.function.name,
-            description: tool.function.description || "",
-            jsonSchema: (tool.function.parameters || {}) as JSONSchema7,
-            handler: async (args: Record<string, unknown>) => ({}), // Dummy handler
-          })
-        );
-
-        const result = await chat({
-          messages: convertedMessages,
-          tools: ephemeralTools,
-          temperature,
-          maxTokens,
-        });
-
-        const completionId = `chatcmpl-${crypto.randomUUID()}`;
-        const created = Math.floor(Date.now() / 1000);
-
-        if (result.toolCalls && result.toolCalls.length > 0) {
-          // Format tool calls response
-          const response: ChatCompletion = {
-            id: completionId,
-            object: "chat.completion",
-            created,
-            model: "apple-on-device",
-            choices: [
-              {
-                index: 0,
-                message: createChatCompletionMessage(
-                  "assistant",
-                  result.text || null,
-                  result.toolCalls
-                ),
-                finish_reason: "tool_calls",
-                logprobs: null,
-              },
-            ],
-            usage: {
-              prompt_tokens: 0,
-              completion_tokens: 0,
-              total_tokens: 0,
-            },
-          };
-          return response;
-        } else {
-          // Regular text response
-          const response: ChatCompletion = {
-            id: completionId,
-            object: "chat.completion",
-            created,
-            model: "apple-on-device",
-            choices: [
-              {
-                index: 0,
-                message: createChatCompletionMessage(
-                  "assistant",
-                  result.text || ""
-                ),
-                finish_reason: "stop",
-                logprobs: null,
-              },
-            ],
-            usage: {
-              prompt_tokens: 0,
-              completion_tokens: 0,
-              total_tokens: 0,
-            },
-          };
-          return response;
-        }
-      } else if (
+      if (
         response_format?.type === "json_schema" &&
-        response_format.json_schema
+        response_format.json_schema?.schema
       ) {
-        // Structured output
-        const result = await chat({
+        // Structured output using AI SDK generateObject
+        const zodSchema = jsonSchemaToZod(response_format.json_schema.schema);
+
+        const result = await generateObject({
+          model: appleAIModel,
           messages: convertedMessages,
-          schema: response_format.json_schema.schema,
+          schema: zodSchema,
           temperature,
-          maxTokens,
+          maxOutputTokens,
         });
 
         const completionId = `chatcmpl-${crypto.randomUUID()}`;
@@ -304,24 +346,34 @@ export const chatCompletions = defineEventHandler(async (event) => {
             },
           ],
           usage: {
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
+            prompt_tokens: result.usage?.inputTokens ?? 0,
+            completion_tokens: result.usage?.outputTokens ?? 0,
+            total_tokens: result.usage?.totalTokens ?? 0,
           },
         };
         return response;
       } else {
-        // Regular chat completion
-        const responseText = await appleAISDK.generateResponseWithHistory(
-          convertedMessages,
-          {
-            temperature,
-            maxTokens,
-          }
-        );
+        // Regular generation with optional tools using AI SDK
+        const result = await generateText({
+          model: appleAIModel,
+          messages: convertedMessages,
+          tools: aiSDKTools,
+          temperature,
+          maxOutputTokens,
+        });
 
         const completionId = `chatcmpl-${crypto.randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
+
+        // Check for tool calls
+        const toolCalls = result.toolCalls?.map((call) => ({
+          id: call.toolCallId,
+          type: "function" as const,
+          function: {
+            name: call.toolName,
+            arguments: JSON.stringify(call.input),
+          },
+        }));
 
         const response: ChatCompletion = {
           id: completionId,
@@ -331,15 +383,20 @@ export const chatCompletions = defineEventHandler(async (event) => {
           choices: [
             {
               index: 0,
-              message: createChatCompletionMessage("assistant", responseText),
-              finish_reason: "stop",
+              message: createChatCompletionMessage(
+                "assistant",
+                result.text || null,
+                toolCalls && toolCalls.length > 0 ? toolCalls : undefined
+              ),
+              finish_reason:
+                toolCalls && toolCalls.length > 0 ? "tool_calls" : "stop",
               logprobs: null,
             },
           ],
           usage: {
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
+            prompt_tokens: result.usage?.inputTokens ?? 0,
+            completion_tokens: result.usage?.outputTokens ?? 0,
+            total_tokens: result.usage?.totalTokens ?? 0,
           },
         };
         return response;
