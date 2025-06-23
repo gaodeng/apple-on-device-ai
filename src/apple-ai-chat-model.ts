@@ -1,3 +1,6 @@
+// src/apple-ai-chat-model.ts
+// This is a compatability layer for the Vercel AI SDK to use the Apple on device intelligence model.
+
 import type {
   LanguageModelV2,
   LanguageModelV2CallOptions,
@@ -108,12 +111,14 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
     usage: LanguageModelV2Usage;
     warnings: Array<LanguageModelV2CallWarning>;
   }> {
-    assert(
-      options.responseFormat &&
-        options.responseFormat.type === "json" &&
-        options.responseFormat.schema,
-      "Structured generation must have a JSON schema"
-    );
+    if (
+      options.responseFormat?.type !== "json" ||
+      !options.responseFormat?.schema
+    ) {
+      throw new Error(
+        "Structured generation must have a JSON schema. Please use the responseFormat property to specify the schema."
+      );
+    }
 
     const schema = options.responseFormat.schema;
     const messages = this.convertPromptToMessages(options.prompt);
@@ -256,7 +261,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
     }
   }
 
-  supportsUrl?(url: URL): boolean {
+  supportsUrl?(url: typeof URL): boolean {
     return true;
   }
 

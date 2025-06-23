@@ -514,6 +514,7 @@ export function _streamChatForVercelAISDK<
     }
   );
 
+  // @ts-expect-error - Readable has a Symbol.asyncIterator property
   return readable[Symbol.asyncIterator]() as AsyncIterableIterator<
     | { type: "text"; text: string }
     | {
@@ -667,6 +668,7 @@ export function chat<T = unknown>(options: {
       }
     );
 
+    // @ts-expect-error - Readable has a Symbol.asyncIterator property
     return readable[Symbol.asyncIterator]() as AsyncIterableIterator<string>;
   } else {
     // Non-streaming mode

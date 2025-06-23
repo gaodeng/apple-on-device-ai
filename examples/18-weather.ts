@@ -233,6 +233,15 @@ async function main() {
         messages: messages,
         stopWhen: stepCountIs(8),
         tools: {
+          time: tool({
+            description: "Use this tool to get the current time.",
+            inputSchema: z.object({}),
+            async execute(input) {
+              spinner.stop();
+              console.log(formatToolCall("time", ""));
+              return new Date().toLocaleTimeString();
+            },
+          }),
           convert_to_celsius: tool({
             description:
               "Use this tool if user asks to convert a temperature to Celsius.",

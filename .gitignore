@@ -42,3 +42,5 @@ native/target/
 # NOTE: build/ directory and native binaries are NOT ignored
 # because they must be committed for distribution since CI 
 # cannot build on macOS 26+ beta
+
+certs/
