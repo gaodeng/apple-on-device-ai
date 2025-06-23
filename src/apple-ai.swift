@@ -260,23 +260,11 @@ private func prepareConversationContext(
     // Determine conversation context – separate the latest user/assistant message
     let lastMessage = messages.last!
     var currentPrompt: String = ""
-    var previousMessages: [ChatMessage] = messages
 
-    if lastMessage.role.lowercased() == "tool" {
-        // Last message is a tool result – keep it in transcript and ask for natural follow-up
-        currentPrompt = ""
-    } else if lastMessage.role.lowercased() == "user" {
-        // Typical chat flow – use the user's content as the new prompt
-        currentPrompt = lastMessage.content ?? ""
-        // Exclude this prompt from the transcript so the model treats it as new input
-        previousMessages.removeLast()
-    } else {
-        // For assistant or other roles, keep entire history and set an empty prompt
-        currentPrompt = ""
-    }
+    currentPrompt = (lastMessage.role.lowercased() == "user") ? (lastMessage.content ?? "") : ""
 
     // Build transcript entries from the remaining messages
-    let transcriptEntries = convertMessagesToTranscript(previousMessages)
+    let transcriptEntries = convertMessagesToTranscript(messages)
 
     // Create generation options
     var options = GenerationOptions()
@@ -351,34 +339,147 @@ private struct ChatMessage: Codable {
 private func convertMessagesToTranscript(_ messages: [ChatMessage]) -> [Transcript.Entry] {
     var entries: [Transcript.Entry] = []
 
-    // Deduplicate tool outputs that share the same id (the JS side sometimes
-    // pushes identical `tool` role messages twice).
-    var seenToolOutputIDs = Set<String>()
-
     // Skip system messages - they will be handled separately with tools
     let nonSystemMessages = messages.filter { $0.role.lowercased() != "system" }
+
+    // Debug: Log conversion start
+    if DEBUG_LOGS {
+        print("\n=== DEBUG: CONVERTING MESSAGES TO TRANSCRIPT ===")
+        print("Processing \(nonSystemMessages.count) non-system messages")
+    }
+
+    // Build a map of tool call IDs to their corresponding tool outputs
+    var toolOutputsById: [String: Transcript.ToolOutput] = [:]
+    var toolCallIds = Set<String>()  // Track all tool call IDs for validation
+
+    for message in nonSystemMessages {
+        if message.role.lowercased() == "tool" {
+            let toolOutputEntries = createToolOutputEntry(from: message)
+            for entry in toolOutputEntries {
+                if case .toolOutput(let output) = entry {
+                    toolOutputsById[output.id] = output
+                    if DEBUG_LOGS {
+                        print("  Found tool output: \(output.toolName) (id: \(output.id))")
+                    }
+                }
+            }
+        }
+    }
+
+    // Process messages in order, but handle tool calls specially
+    var processedToolOutputIds = Set<String>()
 
     for message in nonSystemMessages {
         switch message.role.lowercased() {
         case "user":
             entries.append(.prompt(createPrompt(from: message)))
-        case "assistant":
-            entries.append(createAssistantEntry(from: message))
-        case "tool":
-            // Handle tool messages that may return multiple entries
-            let toolEntries = createToolOutputEntry(from: message).filter { entry in
-                if case .toolOutput(let output) = entry {
-                    if seenToolOutputIDs.contains(output.id) {
-                        return false
-                    }
-                    seenToolOutputIDs.insert(output.id)
-                }
-                return true
+            if DEBUG_LOGS {
+                print("  Added PROMPT from user message")
             }
-            entries.append(contentsOf: toolEntries)
+
+        case "assistant":
+            // For assistant messages, we need to handle the content and tool calls in the right order
+            let assistantEntries = createAssistantEntries(from: message)
+
+            // Separate response entries from tool call entries
+            var responseEntries: [Transcript.Entry] = []
+            var toolCallEntries: [Transcript.Entry] = []
+
+            for entry in assistantEntries {
+                switch entry {
+                case .response:
+                    responseEntries.append(entry)
+                case .toolCalls(let calls):
+                    toolCallEntries.append(entry)
+                    // Add tool calls entry once, before processing outputs
+                    entries.append(.toolCalls(calls))
+
+                    if DEBUG_LOGS {
+                        let callNames = calls.map { $0.toolName }.joined(separator: ", ")
+                        print("  Added TOOL_CALLS: [\(callNames)]")
+                    }
+
+                    // Track tool call IDs for validation
+                    for call in calls {
+                        toolCallIds.insert(call.id)
+                    }
+
+                    // After tool calls, add their corresponding outputs
+                    for call in calls {
+                        if let output = toolOutputsById[call.id] {
+                            entries.append(.toolOutput(output))
+                            processedToolOutputIds.insert(call.id)
+                            if DEBUG_LOGS {
+                                print("    → Added matching TOOL_OUTPUT for \(call.toolName)")
+                            }
+                        } else if DEBUG_LOGS {
+                            print(
+                                "    ⚠️  No matching output found for tool call: \(call.toolName) (id: \(call.id))"
+                            )
+                        }
+                    }
+                default:
+                    break
+                }
+            }
+
+            // Add response entries after tool calls and outputs
+            entries.append(contentsOf: responseEntries)
+            if DEBUG_LOGS && !responseEntries.isEmpty {
+                print("  Added RESPONSE from assistant")
+            }
+
+        // Note: Tool calls without outputs are already added above in the toolCalls case
+        // No need for additional logic here
+
+        case "tool":
+            // Skip tool messages as they've been processed above
+            continue
+
         default:
             entries.append(.prompt(createPrompt(from: message)))  // Fallback to user prompt
         }
+    }
+
+    // Debug: Validate and report
+    if DEBUG_LOGS {
+        print("\n=== TRANSCRIPT VALIDATION ===")
+
+        // Check for orphaned tool outputs
+        let orphanedOutputs = Set(toolOutputsById.keys).subtracting(processedToolOutputIds)
+        if !orphanedOutputs.isEmpty {
+            print("⚠️  Warning: \(orphanedOutputs.count) tool outputs without matching tool calls")
+        }
+
+        // Validate ordering
+        var lastEntryType: String? = nil
+        var isValid = true
+        var expectedToolOutputCount = 0
+
+        for (index, entry) in entries.enumerated() {
+            switch entry {
+            case .toolCalls(let calls):
+                lastEntryType = "toolCalls"
+                expectedToolOutputCount = calls.count
+            case .toolOutput:
+                if lastEntryType != "toolCalls" && expectedToolOutputCount <= 0 {
+                    print("⚠️  Warning: Tool output at index \(index) not preceded by tool calls")
+                    isValid = false
+                } else {
+                    expectedToolOutputCount -= 1
+                    if expectedToolOutputCount == 0 {
+                        lastEntryType = "toolOutput"
+                    }
+                }
+            default:
+                lastEntryType = "other"
+                expectedToolOutputCount = 0
+            }
+        }
+
+        print("Transcript ordering: \(isValid ? "✓ Valid" : "✗ Invalid")")
+        print("Total entries: \(entries.count)")
+        print("=== END VALIDATION ===\n")
     }
 
     return entries
@@ -397,8 +498,24 @@ private func createPrompt(from message: ChatMessage) -> Transcript.Prompt {
     return Transcript.Prompt(segments: [.text(textSegment)])
 }
 
-private func createAssistantEntry(from message: ChatMessage) -> Transcript.Entry {
-    // Check if this is an assistant message with tool calls in the tool_calls array
+private func createAssistantEntries(from message: ChatMessage) -> [Transcript.Entry] {
+    var entries: [Transcript.Entry] = []
+
+    // First, check if there's content to add as a response
+    if let content = message.content, !content.isEmpty {
+        // Only add response if it's not a JSON array (which would be legacy tool calls)
+        let isLegacyToolCall =
+            content.starts(with: "[")
+            && content.data(using: .utf8).flatMap({
+                try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]]
+            }) != nil
+
+        if !isLegacyToolCall {
+            entries.append(.response(createResponse(from: message)))
+        }
+    }
+
+    // Then, check if there are tool calls to add
     if let toolCalls = message.tool_calls,
         !toolCalls.isEmpty,
         toolCalls.allSatisfy({ call in
@@ -410,11 +527,8 @@ private func createAssistantEntry(from message: ChatMessage) -> Transcript.Entry
     {
         // Convert OpenAI tool calls to readable format
         let toolCalls = convertOpenAIToolCalls(toolCalls)
-        return .toolCalls(toolCalls)
-    }
-
-    // Fallback: Check if this is an assistant message with tool calls embedded in content (legacy)
-    if let content = message.content,
+        entries.append(.toolCalls(toolCalls))
+    } else if let content = message.content,
         let toolCallsData = content.data(using: .utf8),
         let toolCalls = try? JSONSerialization.jsonObject(with: toolCallsData) as? [[String: Any]],
         !toolCalls.isEmpty,
@@ -425,29 +539,32 @@ private func createAssistantEntry(from message: ChatMessage) -> Transcript.Entry
             return false
         })
     {
-        // For legacy format, convert to response with tool calls info as text
-        let toolCallsSummary = toolCalls.compactMap { call -> String? in
-            guard let function = call["function"] as? [String: Any],
-                let name = function["name"] as? String
-            else { return nil }
+        // Legacy format: content is a JSON array of tool calls
+        // For legacy format, convert to tool calls entry
+        let toolCallsArray = toolCalls.compactMap { call -> [String: Any]? in
+            guard let function = call["function"] as? [String: Any] else { return nil }
 
-            if let argsString = function["arguments"] as? String,
-                let argsData = argsString.data(using: .utf8),
-                let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
-            {
-                let argsList = args.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
-                return "\(name)(\(argsList))"
-            }
+            // Convert to OpenAI format for reuse
+            var openAICall: [String: Any] = [:]
+            openAICall["id"] =
+                call["id"]
+                ?? "call_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
+            openAICall["function"] = function
+            return openAICall
+        }
 
-            return "\(name)()"
-        }.joined(separator: ", ")
-
-        return .response(
-            Transcript.Response(
-                assetIDs: [], segments: [.text(Transcript.TextSegment(content: toolCallsSummary))]))
+        if !toolCallsArray.isEmpty {
+            let convertedCalls = convertOpenAIToolCalls(toolCallsArray)
+            entries.append(.toolCalls(convertedCalls))
+        }
     }
 
-    return .response(createResponse(from: message))
+    // If no entries were created, create a response with empty content
+    if entries.isEmpty {
+        entries.append(.response(createResponse(from: message)))
+    }
+
+    return entries
 }
 
 // Helper to create GeneratedContent from dictionary
