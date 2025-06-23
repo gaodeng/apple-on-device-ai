@@ -1,3 +1,9 @@
+## [1.5.2] - 2025-06-23
+
+### Changes
+- fix(swift): robust assistant entry & tool call handling, add debug transcript validation
+- fix: tool calling fix in examples
+
 ## [1.5.1] - 2025-06-23
 
 ### Changes
