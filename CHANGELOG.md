@@ -1,3 +1,8 @@
+## [1.5.3] - 2025-06-23
+
+### Changes
+- feat: add OpenAI-compatible server and health check routes, enhance examples with new tools
+
 ## [1.5.2] - 2025-06-23
 
 ### Changes
