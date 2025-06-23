@@ -1,6 +1,6 @@
 import { appleAI } from "../src";
 import { stepCountIs, streamText, tool } from "ai";
-import type { ModelMessage } from "ai";
+import type { ModelMessage, ToolCallPart, ToolResultPart } from "ai";
 import { z } from "zod";
 
 async function main() {
@@ -192,6 +192,9 @@ Differences:
         tools: tools,
       });
 
+      const toolCalls: ToolCallPart[] = [];
+      const toolResponses: ToolResultPart[] = [];
+
       // Collect the complete response including tool calls
       let assistantResponse = "";
 
@@ -200,32 +203,21 @@ Differences:
           process.stdout.write(chunk.text);
           assistantResponse += chunk.text;
         } else if (chunk.type === "tool-result") {
-          messages.push({
-            role: "tool",
-            content: [
-              {
-                type: "tool-result",
-                toolCallId: chunk.toolCallId,
-                toolName: chunk.toolName,
-                output: chunk.output,
-              },
-            ],
-          });
+          toolResponses.push(chunk satisfies ToolResultPart);
         } else if (chunk.type === "tool-call") {
-          messages.push({
-            role: "assistant",
-            content: [
-              {
-                type: "tool-call",
-                toolCallId: chunk.toolCallId,
-                input: chunk.input,
-                toolName: chunk.toolName,
-              },
-            ],
-          });
+          toolCalls.push(chunk satisfies ToolCallPart);
         }
       }
-      messages.push({ role: "assistant", content: assistantResponse });
+
+      messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: assistantResponse }, ...toolCalls],
+      });
+
+      if (toolResponses.length > 0) {
+        messages.push({ role: "tool", content: toolResponses });
+      }
+
       console.log("");
 
       // Add assistant response to conversation
