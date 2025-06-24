@@ -1,3 +1,9 @@
+## [1.5.4] - 2025-06-24
+
+### Changes
+- feat: beta 2 removed .entries
+- refactor(chat-completions): update chat completion handling with AI SDK integration
+
 ## [1.5.3] - 2025-06-23
 
 ### Changes
