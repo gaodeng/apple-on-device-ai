@@ -1,4 +1,4 @@
-import { getNativeModule } from "./native-loader";
+// import { getNativeModule } from "./native-loader";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { CoreMessage, ModelMessage } from "ai";
@@ -15,7 +15,7 @@ function debugErr(...args: unknown[]) {
 }
 
 // Initialize native module using robust loader
-const native = getNativeModule();
+const native = require("../build/apple_ai_napi.node");//getNativeModule();
 
 // Add unified function bindings
 const unifiedBindings = {
