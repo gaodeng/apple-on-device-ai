@@ -107,8 +107,8 @@
     "marked-terminal": "^7.3.0",
     "openai": "^5.6.0",
     "ora": "^8.2.0",
-    "tsdown": "^0.12.8",
-    "typescript": "^5.0.0",
+    "tsdown": "^0.12.9",
+    "typescript": "^5.8.3",
     "zod": "^3.25.67"
   },
   "binary": {
