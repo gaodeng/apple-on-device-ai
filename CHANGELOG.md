@@ -1,3 +1,8 @@
+## [1.5.5] - 2025-06-25
+
+### Changes
+- chore: update dependencies to include ai 5.0.0-beta.1 in lock and package files
+
 ## [1.5.4] - 2025-06-24
 
 ### Changes
