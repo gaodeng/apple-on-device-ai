@@ -1,3 +1,10 @@
+## [1.5.7] - 2025-06-25
+
+### Changes
+- ci: switch CI workflows from macOS to Ubuntu
+- refactor: update import path for appleAI in weather example
+- refactor: add lints
+
 ## [1.5.6] - 2025-06-25
 
 ### Changes
