@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startServer } from "../../src/server";
-import { TextDecoder } from "util";
+import { TextDecoder } from "node:util";
 
 describe("OpenAI-compatible Server Streaming", () => {
   let server: { url: string; port: number; stop: () => Promise<void> };

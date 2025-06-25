@@ -1,14 +1,14 @@
+import { generateObject, generateText, streamText, tool } from "ai";
 import { defineEventHandler, readBody } from "h3";
-import { appleAI } from "../../apple-ai-provider";
-import { streamText, generateText, generateObject, tool } from "ai";
-import { z } from "zod";
 import type {
-  ChatCompletionCreateParams,
-  ChatCompletionChunk,
   ChatCompletion,
+  ChatCompletionChunk,
+  ChatCompletionCreateParams,
   ChatCompletionMessage,
   ChatCompletionTool,
 } from "openai/resources/chat";
+import { z } from "zod";
+import { appleAI } from "../../apple-ai-provider";
 
 // Helper to convert OpenAI messages to simple format for AI SDK
 function convertOpenAIMessages(

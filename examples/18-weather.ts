@@ -3,17 +3,17 @@ import {
   stepCountIs,
   streamText,
   tool,
+  type ModelMessage,
   type ToolCallPart,
   type ToolResultPart,
-  type ModelMessage,
 } from "ai";
-import { z } from "zod";
+import boxen from "boxen";
 import chalk from "chalk";
-import readline from "readline";
-import ora from "ora";
 import { marked } from "marked";
 import TerminalRenderer from "marked-terminal";
-import boxen from "boxen";
+import readline from "node:readline";
+import ora from "ora";
+import { z } from "zod";
 
 // Configure marked to use terminal renderer
 marked.setOptions({
@@ -138,7 +138,7 @@ async function getUserLocationFromIP() {
       };
     }
     return null;
-  } catch (error) {
+  } catch (_error) {
     return null;
   }
 }
@@ -236,7 +236,7 @@ async function main() {
           time: tool({
             description: "Use this tool to get the current time.",
             inputSchema: z.object({}),
-            async execute(input) {
+            async execute(_input) {
               spinner.stop();
               console.log(formatToolCall("time", ""));
               return new Date().toLocaleTimeString();
@@ -309,7 +309,7 @@ async function main() {
                     chalk.green(`${autoLocation.city}, ${autoLocation.region}`)
                   );
                   locationToUse = `${autoLocation.city}, ${autoLocation.region}`;
-                } catch (error) {
+                } catch (_error) {
                   locationSpinner.fail(chalk.red("Location detection failed"));
                   return "Failed to detect your location. Please specify a location for weather.";
                 }
@@ -365,7 +365,7 @@ async function main() {
                 );
 
                 return `${coordinates.name}: ${current.temperature_2m}°F, ${weatherDescription}, ${current.relative_humidity_2m}% humidity, ${current.wind_speed_10m}mph wind`;
-              } catch (error) {
+              } catch (_error) {
                 toolSpinner.fail(chalk.red("Error getting weather"));
                 return `Error getting weather for "${locationToUse}"`;
               }
@@ -408,7 +408,7 @@ async function main() {
           // Count tokens (simple whitespace split)
           tokenCount += chunk.text.split(/\s+/).filter(Boolean).length;
         } else if (chunk.type === "tool-result") {
-          toolResponses.push(chunk satisfies ToolResultPart);
+          toolResponses.push(chunk as any);
         } else if (chunk.type === "tool-call") {
           toolCalls.push(chunk satisfies ToolCallPart);
         }
@@ -437,7 +437,7 @@ async function main() {
           content: [{ type: "text", text: assistantResponse }, ...toolCalls],
         });
       }
-    } catch (error) {
+    } catch (_error) {
       spinner.fail(chalk.red("Error occurred"));
       console.log("");
     }

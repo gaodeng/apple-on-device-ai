@@ -1,6 +1,6 @@
-import { createAppleAI } from "../src/apple-ai-provider.js";
-import { generateText, streamText, generateObject, stepCountIs } from "ai";
+import { generateObject, generateText, streamText } from "ai";
 import { z } from "zod";
+import { createAppleAI } from "../src/apple-ai-provider.js";
 
 // Helper to check if test passed
 function assert(condition: boolean, message: string) {
@@ -116,7 +116,7 @@ async function runVercelSDKSmokeTest() {
   // Test 6: Tool calling
   console.log("\n📝 Test 6: Tool calling");
   try {
-    const { text, toolCalls } = await generateText({
+    const { toolCalls } = await generateText({
       model: ai("apple-on-device"),
       messages: [{ role: "user", content: "What's the weather in Tokyo?" }],
       tools: {
@@ -169,7 +169,7 @@ async function runVercelSDKSmokeTest() {
   // Test 8: Streaming with tools
   console.log("\n📝 Test 8: Streaming with tools");
   try {
-    const { textStream, toolCalls } = streamText({
+    const { toolCalls } = streamText({
       model: ai("apple-on-device"),
       messages: [{ role: "user", content: "Calculate 15 times 7" }],
       tools: {
@@ -196,11 +196,6 @@ async function runVercelSDKSmokeTest() {
       },
     });
 
-    let chunks = 0;
-    for await (const chunk of textStream) {
-      chunks++;
-    }
-
     const calls = await toolCalls;
     assert(calls !== undefined, "Should have tool calls in stream");
     if (calls && calls.length > 0 && calls[0]) {
@@ -221,7 +216,7 @@ async function runVercelSDKSmokeTest() {
     });
     // If it doesn't throw, that's okay - some implementations handle this gracefully
     assert(true, "Error handling completed");
-  } catch (error) {
+  } catch (_error) {
     assert(true, "Correctly handled invalid parameters");
   }
 
@@ -267,15 +262,15 @@ async function runVercelSDKSmokeTest() {
     let chunks = 0;
     try {
       const { textStream } = promise;
-      for await (const chunk of textStream) {
+      for await (const _chunk of textStream) {
         // Should not receive many chunks
         chunks++;
       }
-    } catch (abortError) {
+    } catch (_abortError) {
       // Abort error is expected
     }
     assert(chunks === 0, "Abort signal handled");
-  } catch (error) {
+  } catch (_error) {
     assert(true, "Abort signal test completed TODO: fix");
   }
 

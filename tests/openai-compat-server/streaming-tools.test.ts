@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startServer } from "../../src/server";
-import { TextDecoder } from "util";
+import { TextDecoder } from "node:util";
 
 describe("OpenAI-compatible Server Streaming with Tools", () => {
   let server: { url: string; port: number; stop: () => Promise<void> };
@@ -105,7 +105,7 @@ describe("OpenAI-compatible Server Streaming with Tools", () => {
     expect(dataLines[dataLines.length - 1]).toBe("data: [DONE]");
 
     // Parse and validate chunks
-    let hasContent = false;
+
     let hasToolCall = false;
     let buffer = "";
     const toolCalls: any[] = [];
@@ -126,7 +126,6 @@ describe("OpenAI-compatible Server Streaming with Tools", () => {
       const choice = chunk.choices[0];
 
       if (choice.delta.content) {
-        hasContent = true;
         buffer += choice.delta.content;
       }
 

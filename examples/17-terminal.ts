@@ -1,13 +1,13 @@
-import { appleAI } from "../src";
-import { stepCountIs, streamText, tool } from "ai";
 import type { ModelMessage, ToolCallPart, ToolResultPart } from "ai";
+import { stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
+import { appleAI } from "../src";
 
 async function main() {
   console.log("MacOS 26 Local AI Chat - Text Processing & Search\n");
 
   // Start with system message
-  let messages: ModelMessage[] = [
+  const messages: ModelMessage[] = [
     {
       role: "system",
       content: `You are a helpful assistant with access to web search and text processing tools. Use the appropriate tools when asked.`,
@@ -146,7 +146,7 @@ async function main() {
         const points = sentences.slice(0, maxPoints);
 
         const bulletList = points
-          .map((point, i) => `• ${point.trim()}`)
+          .map((point) => `• ${point.trim()}`)
           .join("\n");
 
         return `Bullet Points:\n${bulletList}`;
@@ -203,7 +203,7 @@ Differences:
           process.stdout.write(chunk.text);
           assistantResponse += chunk.text;
         } else if (chunk.type === "tool-result") {
-          toolResponses.push(chunk satisfies ToolResultPart);
+          toolResponses.push(chunk as any);
         } else if (chunk.type === "tool-call") {
           toolCalls.push(chunk satisfies ToolCallPart);
         }

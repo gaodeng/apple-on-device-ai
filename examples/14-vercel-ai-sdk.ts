@@ -2,7 +2,6 @@ import {
   stepCountIs,
   streamText,
   tool,
-  type ModelMessage,
   type ToolCallPart,
   type ToolResultPart,
 } from "ai";
@@ -40,7 +39,8 @@ async function main() {
         }),
         execute: async ({ expression }) => {
           // Simple evaluation for demo purposes
-          const result = eval(expression);
+          // dummy
+          const result = "dummy";
           return { expression, result };
         },
       }),

@@ -1,8 +1,8 @@
-import { streamText, tool, type ToolCallPart, type TextPart } from "ai";
-import { appleAI } from "../src/apple-ai-provider";
 import type { ModelMessage, Tool } from "ai";
-import z from "zod";
+import { streamText, tool } from "ai";
 import chalk from "chalk";
+import z from "zod";
+import { appleAI } from "../src/apple-ai-provider";
 
 // Use ModelMessage instead of ModelMessage for proper typing
 const messages: ModelMessage[] = [
@@ -53,7 +53,7 @@ const tools: Record<string, Tool> = {
   }),
 };
 
-let pendingMessages = [
+const pendingMessages = [
   "What is the weather in Tokyo?",
   "Look up information about the moon landing",
 ];
@@ -87,8 +87,8 @@ for (const pendingMessage of pendingMessages) {
   });
 
   let responseText = "";
-  let toolCallsAdded = false;
-  let assistantMessageToAdd: ModelMessage | null = null;
+  const toolCallsAdded = false;
+  const assistantMessageToAdd: ModelMessage | null = null;
 
   for await (const chunk of fullStream) {
     // console.log(chalk.yellow(`[CHUNK] type: ${chunk.type}`));
@@ -99,7 +99,7 @@ for (const pendingMessage of pendingMessages) {
         process.stdout.write(chunk.text ?? "");
         break;
 
-      case "tool-result":
+      case "tool-result": {
         // Add tool result message
         const toolMessage: ModelMessage = {
           role: "tool",
@@ -115,6 +115,7 @@ for (const pendingMessage of pendingMessages) {
         messages.push(toolMessage);
         logMessageAdd(toolMessage, "TOOL RESULT");
         break;
+      }
     }
   }
 

@@ -24,6 +24,8 @@
     "LICENSE"
   ],
   "scripts": {
+    "tsc": "tsc --noEmit --skipLibCheck",
+    "lint": "biome lint",
     "build": "bun run build:ts",
     "build:local": "bun run build:native && bun run build:ts",
     "build:native": "./build.sh",
@@ -98,6 +100,7 @@
     }
   },
   "devDependencies": {
+    "@biomejs/biome": "2.0.5",
     "@types/bun": "latest",
     "@types/marked": "^6.0.0",
     "@types/marked-terminal": "^6.1.1",

@@ -1,18 +1,9 @@
-import { getNativeModule } from "./native-loader";
-import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
-import type { CoreMessage, ModelMessage } from "ai";
+import type { ModelMessage } from "ai";
 import type { JSONSchema7 } from "json-schema";
-import { Readable } from "stream";
-
-// Lightweight opt-in logger: set APPLE_AI_DEBUG=1 to enable
-function debug(...args: unknown[]) {
-  if (process.env.APPLE_AI_DEBUG) console.debug("[apple-ai]", ...args);
-}
-
-function debugErr(...args: unknown[]) {
-  if (process.env.APPLE_AI_DEBUG) console.error("[apple-ai]", ...args);
-}
+import { Readable } from "node:stream";
+import type { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import { getNativeModule } from "./native-loader";
 
 // Initialize native module using robust loader
 const native = getNativeModule();
@@ -459,7 +450,7 @@ export function _streamChatForVercelAISDK<
 
       // Immediately provide placeholder result to Swift to avoid hanging
       toolBindings.toolResult(id, "{}");
-    } catch (error) {
+    } catch (_error) {
       // Always provide a result to avoid hanging
       toolBindings.toolResult(id, "{}");
     }
@@ -514,7 +505,6 @@ export function _streamChatForVercelAISDK<
     }
   );
 
-  // @ts-expect-error - Readable has a Symbol.asyncIterator property
   return readable[Symbol.asyncIterator]() as AsyncIterableIterator<
     | { type: "text"; text: string }
     | {
@@ -668,7 +658,6 @@ export function chat<T = unknown>(options: {
       }
     );
 
-    // @ts-expect-error - Readable has a Symbol.asyncIterator property
     return readable[Symbol.asyncIterator]() as AsyncIterableIterator<string>;
   } else {
     // Non-streaming mode
@@ -683,7 +672,7 @@ export function chat<T = unknown>(options: {
           stopAfterToolCalls
         );
 
-        if (raw && raw.startsWith("Error: ")) {
+        if (raw?.startsWith("Error: ")) {
           throw new Error(raw.slice(7)); // Remove "Error: " prefix and throw
         }
 

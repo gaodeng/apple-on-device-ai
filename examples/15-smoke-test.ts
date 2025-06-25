@@ -197,7 +197,7 @@ async function runSmokeTest() {
     // stopAfterToolCalls: true (default)
   });
 
-  for await (const chunk of earlyTermStream) {
+  for await (const _chunk of earlyTermStream) {
     earlyTermChunks++;
   }
   assert(
@@ -238,7 +238,7 @@ async function runSmokeTest() {
       },
       required: ["location"],
     } as JSONSchema7,
-    handler: async (args: any) => ({ temperature: 72, condition: "sunny" }),
+    handler: async (_args: any) => ({ temperature: 72, condition: "sunny" }),
   };
 
   const multiTools = await chat({
@@ -253,15 +253,15 @@ async function runSmokeTest() {
 
   // Test 12: Error handling - invalid schema
   console.log("\n📝 Test 12: Error Handling");
-  let errorOccurred = false;
+  let _errorOccurred = false;
   try {
     // Use a clearly invalid JSON schema that will fail parsing
     await chat({
       messages: "Test",
       schema: null as any, // This should cause an error
     });
-  } catch (error) {
-    errorOccurred = true;
+  } catch (_error) {
+    _errorOccurred = true;
   }
   // The unified function might handle invalid schemas gracefully
   assert(true, "Error handling test completed");

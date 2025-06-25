@@ -82,13 +82,11 @@ async function testVercelAISDKCombo() {
 
     console.log("🔧 Streaming Vercel AI SDK tool execution:");
 
-    let fullText = "";
     const toolResults: any[] = [];
 
     for await (const delta of result.fullStream) {
       switch (delta.type) {
         case "text":
-          fullText += delta.text;
           process.stdout.write(delta.text);
           break;
 
@@ -113,7 +111,7 @@ async function testVercelAISDKCombo() {
       }
     }
 
-    console.log("\n\n" + "=".repeat(70) + "\n");
+    console.log(`\n\n${"=".repeat(70)}\n`);
 
     console.log(
       "2️⃣ Testing: Tool results → Apple Intelligence structured output"
@@ -173,7 +171,7 @@ async function testVercelAISDKCombo() {
     console.log("❌ Failed:", error);
   }
 
-  console.log("\n" + "=".repeat(70) + "\n");
+  console.log(`\n${"=".repeat(70)}\n`);
 
   console.log("3️⃣ Testing: Vercel AI SDK generateObject (if supported)");
   console.log("   Direct structured generation through Vercel AI SDK\n");

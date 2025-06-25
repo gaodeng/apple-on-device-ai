@@ -1,4 +1,4 @@
-import { generateId, loadApiKey } from "@ai-sdk/provider-utils";
+import { generateId } from "@ai-sdk/provider-utils";
 import { AppleAIChatLanguageModel } from "./apple-ai-chat-model";
 
 // Supported model IDs for Apple's on-device models

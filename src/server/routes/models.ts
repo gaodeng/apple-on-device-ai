@@ -1,6 +1,6 @@
 import { defineEventHandler } from "h3";
 
-export const models = defineEventHandler(async (event) => {
+export const models = defineEventHandler(async (_event) => {
   // Return OpenAI-compatible models list
   return {
     object: "list",

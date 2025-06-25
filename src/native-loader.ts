@@ -1,11 +1,11 @@
-import { dirname, join, resolve } from "path";
-import { fileURLToPath } from "url";
-import { createRequire } from "module";
-import { existsSync } from "fs";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ESM compatibility
 let __dirname: string;
-let require: NodeRequire;
+let require: NodeJS.Require;
 
 try {
   // Try to use global __dirname if available (CommonJS)
@@ -75,7 +75,6 @@ export function loadNativeModule(): any {
       return require(path);
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
-      continue;
     }
   }
 

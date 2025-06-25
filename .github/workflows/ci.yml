@@ -31,6 +31,12 @@ jobs:
       - name: Validate pre-built native binaries exist
         run: bun run validate-binaries
 
+      - name: Lint
+        run: bun run lint
+
+      - name: Type check
+        run: bun run tsc
+
       - name: Build TypeScript
         run: bun run build:ts
 

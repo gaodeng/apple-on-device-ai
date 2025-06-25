@@ -1,6 +1,6 @@
 import { defineEventHandler } from "h3";
 
-export const apiTags = defineEventHandler(async (event) => {
+export const apiTags = defineEventHandler(async (_event) => {
   // Return Ollama-compatible models list
   return {
     models: [

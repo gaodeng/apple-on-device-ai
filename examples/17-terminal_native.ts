@@ -1,6 +1,6 @@
-import { appleAISDK, chat, type ChatMessage } from "../src";
-import { zodToJsonSchema } from "zod-to-json-schema";
 import type { JSONSchema7 } from "json-schema";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import { chat, type ChatMessage } from "../src";
 
 import { z } from "zod";
 
@@ -8,7 +8,7 @@ async function main() {
   console.log("MacOS 26 Local AI Chat - Text Processing & Search\n");
 
   // Start with system message
-  let messages: ChatMessage[] = [
+  const messages: ChatMessage[] = [
     {
       role: "system",
       content: `You are a helpful assistant with access to web search and text processing tools. Use the appropriate tools when asked.`,

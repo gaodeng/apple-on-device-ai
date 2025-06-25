@@ -1,7 +1,7 @@
 import { defineEventHandler } from "h3";
 import { appleAISDK } from "../../apple-ai";
 
-export const health = defineEventHandler(async (event) => {
+export const health = defineEventHandler(async (_event) => {
   try {
     const availability = await appleAISDK.checkAvailability();
     return {

@@ -2,8 +2,8 @@
 
 import { startServer } from "../src/server";
 import devcert from "devcert";
-import fs from "fs";
-import path from "path";
+import fs from "node:fs";
+import path from "node:path";
 
 async function main() {
   console.log("Starting Apple AI OpenAI-compatible server...\n");

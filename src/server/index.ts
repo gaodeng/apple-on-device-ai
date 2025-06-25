@@ -1,9 +1,9 @@
-import { readFileSync } from "fs";
+import { readFileSync } from "node:fs";
 import type { App, H3Event } from "h3";
 import { createApp, defineEventHandler, toNodeListener } from "h3";
-import { createServer as createHttpServer, createServer } from "http";
-import { createServer as createHttpsServer } from "https";
-import type { Server } from "net";
+import { createServer as createHttpServer, createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import type { Server } from "node:net";
 
 export interface ServerOptions {
   host?: string;
@@ -141,14 +141,14 @@ export async function startServer(opts: ServerOptions = {}) {
         : port + 1;
 
     httpsServer = createHttpsServer(creds, toNodeListener(app));
-    await new Promise((resolve) => {
-      httpsServer!.listen(httpsPort, host, resolve);
+    await new Promise<void>((resolve) => {
+      httpsServer!.listen(httpsPort, host, () => resolve());
     });
 
     // Also start HTTP server
     const httpServer = createHttpServer(toNodeListener(app));
-    await new Promise((resolve) => {
-      httpServer.listen(httpPort, host, resolve);
+    await new Promise<void>((resolve) => {
+      httpServer.listen(httpPort, host, () => resolve());
     });
 
     server = httpsServer;
@@ -169,8 +169,8 @@ export async function startServer(opts: ServerOptions = {}) {
   } else {
     // HTTP only
     server = createHttpServer(toNodeListener(app));
-    await new Promise((resolve) => {
-      server.listen(port, host, resolve);
+    await new Promise<void>((resolve) => {
+      server.listen(port, host, () => resolve());
     });
 
     const urls = {

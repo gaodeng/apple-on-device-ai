@@ -14,15 +14,16 @@ import type {
   SharedV2Headers,
   SharedV2ProviderMetadata,
 } from "@ai-sdk/provider";
-import assert from "assert";
+import type { ModelMessage } from "ai";
+import assert from "node:assert";
+import type { ChatCompletionChunk } from "openai/resources/chat";
 import type { ChatMessage } from "./apple-ai";
 import {
-  appleAISDK as appleAIInstance,
   _streamChatForVercelAISDK,
+  appleAISDK as appleAIInstance,
   chat,
 } from "./apple-ai";
 import type { AppleAIModelId, AppleAISettings } from "./apple-ai-provider";
-import type { ModelMessage } from "ai";
 
 export interface AppleAIChatConfig {
   provider: string;
@@ -188,7 +189,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
           name: t.name,
           description: t.description,
           jsonSchema: t.inputSchema,
-          handler: async (args: Record<string, unknown>) => {
+          handler: async (_args: Record<string, unknown>) => {
             // Placeholder - tools will be handled by Vercel AI SDK
             return {};
           },
@@ -261,7 +262,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
     }
   }
 
-  supportsUrl?(url: typeof URL): boolean {
+  supportsUrl?(_url: typeof URL): boolean {
     return true;
   }
 
@@ -279,7 +280,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
     }
 
     // Convert AI SDK prompt to our format
-    let messages = this.convertPromptToMessages(prompt);
+    const messages = this.convertPromptToMessages(prompt);
 
     if (tools && tools.length > 0) {
       return this.createToolEnabledStream(messages, tools);
@@ -301,7 +302,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
         name: t.name,
         description: t.description,
         jsonSchema: t.inputSchema,
-        handler: async (args: Record<string, unknown>) => {
+        handler: async (_args: Record<string, unknown>) => {
           // Placeholder - Vercel AI SDK will handle execution
           return {};
         },
@@ -327,7 +328,9 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
       maxTokens: this.settings.maxTokens,
     });
 
-    const stream = this.createStreamFromChunks(streamNoTools);
+    const stream = this.createStreamFromChunks(
+      streamNoTools as AsyncIterableIterator<ChatCompletionChunk>
+    );
     return Promise.resolve({ stream });
   }
 
@@ -348,11 +351,14 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
         try {
           for await (const event of nativeStream) {
             if (event.type === "text") {
-              controller.enqueue({ type: "text", text: event.text });
+              controller.enqueue({
+                type: "text-delta",
+                delta: event.text,
+                id: crypto.randomUUID(),
+              });
             } else if (event.type === "tool-call") {
               controller.enqueue({
                 type: "tool-call",
-                toolCallType: "function",
                 toolCallId: event.toolCallId,
                 toolName: event.toolName,
                 input: JSON.stringify(event.args),
@@ -368,7 +374,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
   }
 
   private createStreamFromChunks(
-    streamNoTools: AsyncIterableIterator<any>
+    streamNoTools: AsyncIterableIterator<ChatCompletionChunk>
   ): ReadableStream<LanguageModelV2StreamPart> {
     const finishStream = this.finishStream; // Capture method reference
     return new ReadableStream<LanguageModelV2StreamPart>({
@@ -378,7 +384,12 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
             let text = "";
             if (typeof chunk === "string") text = chunk;
             else text = chunk.choices?.[0]?.delta?.content ?? "";
-            if (text) controller.enqueue({ type: "text", text });
+            if (text)
+              controller.enqueue({
+                type: "text-delta",
+                delta: text,
+                id: crypto.randomUUID(),
+              });
           }
           finishStream(controller);
         } catch (error) {

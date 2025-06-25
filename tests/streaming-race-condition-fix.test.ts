@@ -76,7 +76,7 @@ test("multiple sequential streams should all complete", async () => {
     });
 
     let chunkCount = 0;
-    for await (const chunk of stream) {
+    for await (const _chunk of stream) {
       chunkCount++;
       if (chunkCount > 50) break; // Safety limit
     }

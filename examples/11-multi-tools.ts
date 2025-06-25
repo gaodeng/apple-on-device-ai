@@ -11,7 +11,7 @@ async function main() {
   const AddArgs = z.object({ a: z.number(), b: z.number() });
   const MultiplyArgs = z.object({ x: z.number(), y: z.number() });
 
-  const res = await chat({
+  const _res = await chat({
     messages: [
       {
         role: "user" as const,
