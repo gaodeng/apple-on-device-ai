@@ -32,8 +32,6 @@
     "clean": "rm -rf dist",
     "clean:all": "rm -rf dist build",
     "validate-binaries": "node -e \"const fs=require('fs'); const path='build/apple_ai_napi.node'; if(!fs.existsSync(path)) throw new Error('Missing native binary: '+path); console.log('✅ Native binaries found');\"",
-    "dev": "bun run index.ts",
-    "dev:https": "bun run scripts/dev-server.ts",
     "example:native": "bun run index.ts",
     "example:ai-sdk": "bun run example-ai-sdk.ts",
     "examples": "bun run examples/index.ts",
