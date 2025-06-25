@@ -1,4 +1,4 @@
-import { appleAI } from "@meridius-labs/apple-on-device-ai";
+import { appleAI } from "../src";
 import {
   stepCountIs,
   streamText,
