@@ -84,7 +84,8 @@
     "@types/json-schema": "^7.0.15",
     "h3": "^1.15.3",
     "json-schema": "^0.4.0",
-    "zod-to-json-schema": "^3.24.5"
+    "zod-to-json-schema": "^3.24.5",
+    "ai": "5.0.0-beta.1"
   },
   "peerDependencies": {
     "ai": "",
@@ -102,7 +103,6 @@
     "@types/bun": "latest",
     "@types/marked": "^6.0.0",
     "@types/marked-terminal": "^6.1.1",
-    "ai": "5.0.0-alpha.15",
     "boxen": "^8.0.1",
     "devcert": "^1.2.2",
     "marked": "^15.0.12",
