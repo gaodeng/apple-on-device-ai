@@ -51,7 +51,7 @@ jobs:
           echo "ℹ️  Run 'bun test' locally before pushing"
 
   lint-and-format:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
