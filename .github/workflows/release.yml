@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     permissions:
       contents: write # create commits / tags
       id-token: write # provenance for npm publish

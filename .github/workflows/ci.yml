@@ -8,7 +8,7 @@ on:
 
 jobs:
   validate:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         node-version: [18, 20]
@@ -24,9 +24,6 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
-
-      - name: Check macOS version
-        run: sw_vers
 
       - name: Validate pre-built native binaries exist
         run: bun run validate-binaries
@@ -75,6 +72,6 @@ jobs:
           if [ -f "dist/index.js" ] && [ -f "dist/index.mjs" ] && [ -f "dist/index.d.ts" ]; then
             echo "✅ TypeScript compilation successful"
           else
-            echo "❌ TypeScript compilation failed"
+            echo "❌ TypeScript compilation failed" 
             exit 1
           fi
