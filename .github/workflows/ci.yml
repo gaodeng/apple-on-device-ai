@@ -28,6 +28,9 @@ jobs:
       - name: Validate pre-built native binaries exist
         run: bun run validate-binaries
 
+      - name: Lint
+        run: bun run lint
+
       - name: Build TypeScript
         run: bun run build:ts
 
@@ -35,28 +38,6 @@ jobs:
         run: |
           npm pack --dry-run
           echo "✅ Package validation complete"
-
-      # Note: Actual tests require Apple Intelligence/Apple Silicon
-      # and can't run in CI environment. Tests should be run locally
-      # before pushing or in a self-hosted runner with Apple Silicon.
-      - name: Test note
-        run: |
-          echo "⚠️  Tests require Apple Intelligence and must be run locally"
-          echo "ℹ️  Run 'bun test' locally before pushing"
-
-  lint-and-format:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       - name: Validate TypeScript compilation
         run: |
@@ -67,8 +48,10 @@ jobs:
             exit 1
           fi
 
-      - name: Lint
-        run: bun run lint
-
-      - name: Type check
-        run: bun run tsc
+      # Note: Actual tests require Apple Intelligence/Apple Silicon
+      # and can't run in CI environment. Tests should be run locally
+      # before pushing or in a self-hosted runner with Apple Silicon.
+      - name: Test note
+        run: |
+          echo "⚠️  Tests require Apple Intelligence and must be run locally"
+          echo "ℹ️  Run 'bun test' locally before pushing"
