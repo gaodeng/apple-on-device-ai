@@ -1,3 +1,10 @@
+## [1.5.6] - 2025-06-25
+
+### Changes
+- chore: update tsdown to 0.12.9 and typescript to 5.8.3
+- chore: update @ai-sdk/provider and @ai-sdk/provider-utils to beta versions
+- refactor: remove index.ts and related development scripts
+
 ## [1.5.5] - 2025-06-25
 
 ### Changes
