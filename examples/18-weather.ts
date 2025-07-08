@@ -239,7 +239,10 @@ async function main() {
             async execute(_input) {
               spinner.stop();
               console.log(formatToolCall("time", ""));
-              return new Date().toLocaleTimeString();
+              return {
+                type: "text" as const,
+                value: new Date().toLocaleTimeString(),
+              };
             },
           }),
           convert_to_celsius: tool({
@@ -267,7 +270,7 @@ async function main() {
                 chalk.green(`${input.temperature}°F = ${celsius}°C`)
               );
 
-              return `${celsius}°C`;
+              return { type: "text" as const, value: `${celsius}°C` };
             },
           }),
 
@@ -302,7 +305,11 @@ async function main() {
                     locationSpinner.fail(
                       chalk.red("Could not detect location")
                     );
-                    return "Unable to detect your location. Please specify a location for weather.";
+                    return {
+                      type: "text" as const,
+                      value:
+                        "Unable to detect your location. Please specify a location for weather.",
+                    };
                   }
 
                   locationSpinner.succeed(
@@ -311,7 +318,11 @@ async function main() {
                   locationToUse = `${autoLocation.city}, ${autoLocation.region}`;
                 } catch (_error) {
                   locationSpinner.fail(chalk.red("Location detection failed"));
-                  return "Failed to detect your location. Please specify a location for weather.";
+                  return {
+                    type: "text" as const,
+                    value:
+                      "Failed to detect your location. Please specify a location for weather.",
+                  };
                 }
               }
 
@@ -331,7 +342,10 @@ async function main() {
                   toolSpinner.fail(
                     chalk.red(`Location "${locationToUse}" not found`)
                   );
-                  return `Location "${locationToUse}" not found`;
+                  return {
+                    type: "text" as const,
+                    value: `Location "${locationToUse}" not found`,
+                  };
                 }
 
                 // Get weather data
@@ -364,10 +378,16 @@ async function main() {
                   chalk.green(`${coordinates.name}, ${coordinates.country}`)
                 );
 
-                return `${coordinates.name}: ${current.temperature_2m}°F, ${weatherDescription}, ${current.relative_humidity_2m}% humidity, ${current.wind_speed_10m}mph wind`;
+                return {
+                  type: "text" as const,
+                  value: `${coordinates.name}: ${current.temperature_2m}°F, ${weatherDescription}, ${current.relative_humidity_2m}% humidity, ${current.wind_speed_10m}mph wind`,
+                };
               } catch (_error) {
                 toolSpinner.fail(chalk.red("Error getting weather"));
-                return `Error getting weather for "${locationToUse}"`;
+                return {
+                  type: "text" as const,
+                  value: `Error getting weather for "${locationToUse}"`,
+                };
               }
             },
           }),
@@ -408,7 +428,8 @@ async function main() {
           // Count tokens (simple whitespace split)
           tokenCount += chunk.text.split(/\s+/).filter(Boolean).length;
         } else if (chunk.type === "tool-result") {
-          toolResponses.push(chunk as any);
+          toolResponses.push(chunk);
+          // Don't display tool results - let the AI incorporate them into its response
         } else if (chunk.type === "tool-call") {
           toolCalls.push(chunk satisfies ToolCallPart);
         }
@@ -427,15 +448,20 @@ async function main() {
         console.log(speedMsg);
       }
 
-      if (toolResponses.length > 0) {
-        messages.push({ role: "tool", content: toolResponses });
-      }
-
-      if (assistantResponse.trim()) {
+      if (assistantResponse.trim() || toolCalls.length > 0) {
         messages.push({
           role: "assistant",
-          content: [{ type: "text", text: assistantResponse }, ...toolCalls],
+          content: [
+            ...(assistantResponse.trim()
+              ? [{ type: "text" as const, text: assistantResponse }]
+              : []),
+            ...toolCalls,
+          ],
         });
+      }
+
+      if (toolResponses.length > 0) {
+        messages.push({ role: "tool", content: toolResponses });
       }
     } catch (_error) {
       spinner.fail(chalk.red("Error occurred"));

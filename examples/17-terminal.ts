@@ -60,9 +60,12 @@ async function main() {
           }
         }
 
-        return `Search Results for "${
-          input.query || "your search"
-        }":\n\n${result}`;
+        return {
+          type: "text" as const,
+          value: `Search Results for "${
+            input.query || "your search"
+          }":\n\n${result}`,
+        };
       },
     }),
 
@@ -87,14 +90,20 @@ async function main() {
 
         // Mock summarization by taking key sentences and reducing length
         if (words.length <= 20) {
-          return `Summary: ${text}`;
+          return {
+            type: "text" as const,
+            value: `Summary: ${text}`,
+          };
         }
 
         const targetLength =
           input.length === "short" ? 30 : input.length === "medium" ? 50 : 80;
         const summary = words.slice(0, targetLength).join(" ");
 
-        return `Summary (${input.length || "medium"} length): ${summary}...`;
+        return {
+          type: "text" as const,
+          value: `Summary (${input.length || "medium"} length): ${summary}...`,
+        };
       },
     }),
 
@@ -119,7 +128,10 @@ async function main() {
           .slice(0, Math.floor(words.length * 0.7))
           .join(" ");
 
-        return `Concise version: ${conciseText}`;
+        return {
+          type: "text" as const,
+          value: `Concise version: ${conciseText}`,
+        };
       },
     }),
 
@@ -149,7 +161,10 @@ async function main() {
           .map((point) => `• ${point.trim()}`)
           .join("\n");
 
-        return `Bullet Points:\n${bulletList}`;
+        return {
+          type: "text" as const,
+          value: `Bullet Points:\n${bulletList}`,
+        };
       },
     }),
 
@@ -162,7 +177,9 @@ async function main() {
       async execute(input) {
         console.log("[TOOL] Compare Topics", input);
 
-        return `Comparison between "${input.topic1}" and "${input.topic2}":
+        return {
+          type: "text" as const,
+          value: `Comparison between "${input.topic1}" and "${input.topic2}":
 
 Similarities:
 • Both are cutting-edge technology fields
@@ -172,7 +189,8 @@ Similarities:
 Differences:
 • ${input.topic1}: Focuses on specific technological approach and applications
 • ${input.topic2}: Has different implementation methods and use cases
-• Timeline and maturity levels may vary between the two fields`;
+• Timeline and maturity levels may vary between the two fields`,
+        };
       },
     }),
   };

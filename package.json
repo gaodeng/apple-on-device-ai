@@ -80,12 +80,12 @@
   ],
   "dependencies": {
     "@ai-sdk/provider": "2.0.0-beta.1",
-    "@ai-sdk/provider-utils": "3.0.0-beta.1",
+    "@ai-sdk/provider-utils": "3.0.0-beta.2",
     "@types/json-schema": "^7.0.15",
     "h3": "^1.15.3",
     "json-schema": "^0.4.0",
     "zod-to-json-schema": "^3.24.5",
-    "ai": "5.0.0-beta.1"
+    "ai": "5.0.0-beta.9"
   },
   "peerDependencies": {
     "ai": "",
