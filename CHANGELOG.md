@@ -1,3 +1,14 @@
+## [1.6.0] - 2025-07-22
+
+### Changes
+- chore: update dependency versions and improve error handling in example and Swift files
+- Create FUNDING.yml [skip ci]
+- chore: update dependencies and refactor example responses to return structured objects
+- ci: rename validate job to build and update node version matrix
+- ci: add lint step to CI workflow and remove redundant lint job
+- ci: reorder lint and type check steps in CI workflow
+- ci: switch lint-and-format job to run on Ubuntu
+
 ## [1.5.7] - 2025-06-25
 
 ### Changes
