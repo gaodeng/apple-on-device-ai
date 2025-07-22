@@ -464,7 +464,7 @@ async function main() {
         messages.push({ role: "tool", content: toolResponses });
       }
     } catch (_error) {
-      spinner.fail(chalk.red("Error occurred"));
+      spinner.fail(chalk.red("Error occurred", _error));
       console.log("");
     }
   }

@@ -682,9 +682,10 @@ private func emitError(
 // MARK: - JS Tool Callback Bridge
 
 // Simple async callback - Rust calls this, expects result via separate callback
-public typealias JSToolCallback = @convention(c) (
-    _ toolID: UInt64, _ argsJson: UnsafePointer<CChar>
-) -> Void
+public typealias JSToolCallback =
+    @convention(c) (
+        _ toolID: UInt64, _ argsJson: UnsafePointer<CChar>
+    ) -> Void
 
 private var jsToolCallback: JSToolCallback?
 
@@ -715,9 +716,9 @@ private struct JSProxyTool: Tool {
 
     var parameters: GenerationSchema { parametersSchema }
 
-    func call(arguments: JSArguments) async throws -> ToolOutput {
+    func call(arguments: JSArguments) async throws -> String {
         guard let cb = jsToolCallback else {
-            return ToolOutput("Tool system not available")
+            return "Tool system not available"
         }
 
         // Serialize arguments and forward to JavaScript for external execution
@@ -725,7 +726,7 @@ private struct JSProxyTool: Tool {
         guard let data = try? JSONSerialization.data(withJSONObject: jsonObj),
             let jsonStr = String(data: data, encoding: .utf8)
         else {
-            return ToolOutput("Unable to process tool arguments")
+            return "Unable to process tool arguments"
         }
 
         // Notify JavaScript side for collection and external execution
@@ -742,7 +743,7 @@ private struct JSProxyTool: Tool {
         await StreamingCoordinator.shared.toolCompleted()
 
         // Return placeholder output to allow generation to continue naturally
-        return ToolOutput("Tool call executed")
+        return "Tool call executed"
     }
 }
 
